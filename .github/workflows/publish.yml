@@ -13,7 +13,7 @@ jobs:
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-      IMAGE_NAME: packetfence-kerio-sso
+      IMAGE_NAME: packetfence-kerio-sso-bridge
 
     steps:
       - name: Checkout repository
