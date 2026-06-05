@@ -1,0 +1,18 @@
+services:
+  pf-kerio-sso:
+    build: .
+    image: pf-kerio-sso:latest
+    container_name: pf-kerio-sso
+    restart: unless-stopped
+    ports:
+      - "9090:9090"          # PacketFence JSON-RPC  AND  the management GUI
+    env_file: .env
+    volumes:
+      - ./certs:/certs:ro    # TLS cert/key (CERT_FILE/KEY_FILE in .env)
+      - ./data:/data         # persisted list of Kerio firewalls (kerios.json)
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import socket,os; s=socket.create_connection(('127.0.0.1',int(os.getenv('LISTEN_PORT','9090'))),3); s.close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

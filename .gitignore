@@ -1,0 +1,8 @@
+# secrets & per-deployment state — never commit these
+.env
+certs/
+data/
+
+# python
+__pycache__/
+*.pyc
