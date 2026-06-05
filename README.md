@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="SSO%20Bridge%20.png" alt="PacketFence Kerio SSO Bridge logo" width="260">
+</p>
+
 # PacketFence → Kerio Control SSO Bridge
 
 A small, self-contained service that turns **PacketFence**'s generic `JSONRPC`
