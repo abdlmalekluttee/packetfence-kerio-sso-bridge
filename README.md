@@ -28,6 +28,10 @@ PacketFence  --(JSON-RPC: Start / Update / Stop)-->  this bridge  --(Kerio API)-
 - Stateless except a small JSON store of your Kerio list
 - No third-party Python dependencies (standard library only)
 
+<p align="center">
+  <img src="assets/GUI.png" alt="PacketFence Kerio SSO Bridge logo" width="260">
+</p>
+
 ## Requirements
 
 - **Kerio must be the L3 gateway** for the user networks — a device must already
