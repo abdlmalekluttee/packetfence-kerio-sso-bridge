@@ -29,7 +29,7 @@ PacketFence  --(JSON-RPC: Start / Update / Stop)-->  this bridge  --(Kerio API)-
 - No third-party Python dependencies (standard library only)
 
 <p align="center">
-  <img src="assets/GUI.png" alt="PacketFence Kerio SSO Bridge logo" width="260">
+  <img src="assets/GUI.png" alt="PacketFence Kerio SSO Bridge logo" width="720">
 </p>
 
 ## Requirements
