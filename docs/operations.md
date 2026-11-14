@@ -18,7 +18,7 @@ the plaintext backend to an isolated interface. Do not trust forwarded-origin
 headers. Browser and API clients must send the origin and CSRF token for writes.
 
 The manual-IP override grants a significant configuration capability. Use a
-dedicated Kerio API account and validate its permissions. Broad group/MAC/template
+dedicated Kerio API account and validate its permissions. Broad group/MAC
 rules intentionally fail closed. Kerio offers no atomic revision guard for this
 Users.set operation: avoid concurrent administrative edits to the same user's
 automatic-login list. The bridge rereads before writing and verifies afterward.
@@ -34,6 +34,14 @@ requiring an exact full-domain identity and a unique user in that domain. It
 does not convert, rename, or delete local accounts. Authentication warning 8004,
 unknown warnings, and warnings or item errors on configuration writes remain
 blocking failures. This behavior was checked against Kerio 9.3.4 build 3795.
+
+Domain templates control User.data (rights, quotas, web filtering, and language);
+User.autoLogin is a separate per-user field in the
+[Kerio Users API source](https://manuals.gfi.com/en/kerio/api/control/reference/_users_8idl_source.html).
+Exact-IP removal therefore also supports users with useTemplate enabled. The
+write includes only autoLogin: it never disables the template or writes its
+rights/quotas. Enabled MAC or address-group automatic-login rules still block
+automatic removal, and concurrent template-setting changes abort the write.
 
 ## Migration
 
@@ -111,7 +119,8 @@ logs for manual-IP audits; the event records target/user ID/IP without passwords
 | Different user obtains IP | Correct full-domain user bound after verification |
 | Exact manual IP conflict, override off | No Users.set/logout; visible pending conflict |
 | Exact manual IP conflict, override on | Only that address removed, other settings unchanged; correct user active |
-| Group/MAC/inherited auto-login | No configuration write; clear manual-resolution error |
+| Group/MAC auto-login | No configuration write; clear manual-resolution error |
+| Exact IP on a domain-template user | Remove only the personal IP; template flag and rights/quotas unchanged |
 | Same username, different domains | Never treated as equivalent |
 | Stop while login is in flight | Stop reconciles latest desired state; no final stale login |
 | Kerio down during Stop | Non-OK reply, pending state; revocation after recovery |
