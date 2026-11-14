@@ -10,6 +10,7 @@ from .kerio import KerioError, normalized_user
 
 LOG = logging.getLogger(__name__)
 HOST_MISSING = 'Host not yet present in Kerio; retry pending'
+MISSING_HOST_ERRORS = (HOST_MISSING, 'No active host on configured targets')
 PRESENCE_COOLDOWN = 5
 PRESENCE_WINDOW = 10
 
@@ -87,7 +88,7 @@ class Engine:
                            'updated':now, 'mac':mac or old['mac']}
                 if desired == 'active':
                     renewed['presence_until'] = now + PRESENCE_WINDOW
-                    if old.get('error') == HOST_MISSING:
+                    if old.get('error') in MISSING_HOST_ERRORS:
                         # An event is a presence hint, not proof of a new session.
                         # Coalesce concurrent hints using durable per-IP timing.
                         renewed['next_try'] = min(old['next_try'],
@@ -233,7 +234,7 @@ class Engine:
                     now = self.clock()
                     changes = {'error':error, 'attempts':attempts,
                                'next_try':now + min(300, 2 ** min(attempts, 9))}
-                    if error == HOST_MISSING and latest['desired'] == 'active':
+                    if error in MISSING_HOST_ERRORS and latest['desired'] == 'active':
                         changes['presence_retry_after'] = now + PRESENCE_COOLDOWN
                         # Read the latest event deadline inside the transaction:
                         # an event can arrive while the Kerio read is in flight.

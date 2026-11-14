@@ -59,6 +59,21 @@ class ReconnectTests(unittest.TestCase):
         self.assertEqual(self.client.mutations(), [])
         self.assertEqual(self.client.hosts[0]['authMethod'], 'AuthMethodSslWeb')
 
+    def test_unpinned_missing_host_reconnect_selects_one_of_multiple_targets(self):
+        second = Appliance()
+        second.clock = self.clock
+        second.hosts = []
+        self.registry.clients['second'] = second
+        self.long_missing_retry()
+        self.assertIsNone(self.store.get(self.params['ip'])['target'])
+        self.clock.advance(60)
+        second.hosts = [host(user='')]
+        self.assertIsNone(self.engine.handle('Update', self.params))
+        self.assertEqual(self.store.get(self.params['ip'])['target'], 'second')
+        self.assertEqual(second.hosts[0]['user']['name'], 'alice')
+        self.assertEqual(self.client.mutations(), [])
+        self.assertEqual([m for m, _ in second.mutations()], ['ActiveHosts.login'])
+
     def test_host_appearing_after_event_gets_followup_without_another_event(self):
         self.long_missing_retry()
         self.clock.advance(60)
