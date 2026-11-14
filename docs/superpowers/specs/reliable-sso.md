@@ -34,7 +34,9 @@ automatic-login IP from the previous user's Kerio configuration.
 - Override may remove only the exact IP from that user's enabled addresses list;
   preserve other IPs, MACs and groups, account, password, permissions and quota.
   Never delete users or edit shared address groups/ranges. Refuse unsafe automatic
-  group/MAC/template cases. Verify saved configuration and final active identity.
+  group/MAC cases. Domain-template User.data is separate from per-user autoLogin;
+  preserve template settings while removing an exact personal IP. Verify saved
+  configuration and final active identity.
 - Use read-before-write, minimal Users.set, check result.errors, audit changes.
   No claim of atomic compare-and-swap: Kerio exposes no revision guard here.
 - TLS verification defaults on with private CA support. Reject default/empty

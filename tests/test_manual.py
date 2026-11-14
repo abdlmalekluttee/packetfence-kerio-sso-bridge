@@ -30,14 +30,26 @@ class ManualTests(unittest.TestCase):
         with self.assertRaises(KerioError): c.prepare_conflict(host(method='AuthMethodAutomatic'),'192.0.2.10','missing@example.test')
         self.assertEqual(c.mutations(),[])
 
-    def test_shared_rules_and_templates_are_not_automatically_edited(self):
-        for field in ('addressGroup','macAddresses','template'):
+    def test_shared_group_and_mac_rules_are_not_automatically_edited(self):
+        for field in ('addressGroup','macAddresses'):
             with self.subTest(field=field):
                 c=Appliance({'override_manual':True})
-                if field=='template': c.users[0]['useTemplate']=True
-                else: c.users[0]['autoLogin'][field]['enabled']=True
+                c.users[0]['autoLogin'][field]['enabled']=True
                 with self.assertRaises(KerioError): c.prepare_conflict(host(method='AuthMethodAutomatic'),'192.0.2.10','bob@example.test')
                 self.assertEqual(c.mutations(),[])
+
+    def test_domain_template_user_keeps_template_and_removes_only_personal_ip(self):
+        c=Appliance({'override_manual':True})
+        c.users[0].update(useTemplate=True,data={'rights':{'writeConfig':False},
+                                              'quota':{'blockTraffic':True}})
+        before=copy.deepcopy(c.users[0])
+        c.prepare_conflict(host(method='AuthMethodAutomatic'),'192.0.2.10','bob@example.test')
+        after=copy.deepcopy(c.users[0]);changed=after.pop('autoLogin');before.pop('autoLogin')
+        self.assertEqual(after,before)
+        self.assertEqual(changed['addresses'],{'enabled':True,'value':['192.0.2.20']})
+        writes=c.mutations()
+        self.assertEqual([m for m,p in writes],['Users.set'])
+        self.assertEqual(set(writes[0][1]['details']),{'autoLogin'})
 
     def test_item_errors_fail_without_attempting_active_login(self):
         c=Appliance({'override_manual':True})

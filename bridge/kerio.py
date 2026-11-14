@@ -337,9 +337,11 @@ class KerioClient:
                 return
             if not override:
                 raise KerioError('Manual IP conflict; override is disabled')
-            if (owner.get('useTemplate') or (auto.get('macAddresses') or {}).get('enabled')
+            # Domain templates govern User.data (rights/quota/filter/language),
+            # not User.autoLogin. Preserve useTemplate and data by omitting them.
+            if ((auto.get('macAddresses') or {}).get('enabled')
                     or (auto.get('addressGroup') or {}).get('enabled')):
-                raise KerioError('Shared MAC/group/template automatic-login rules require manual resolution')
+                raise KerioError('Shared MAC/group automatic-login rules require manual resolution')
             latest = self._user_by_id(did, owner['id'])
             if latest.get('autoLogin') != auto or latest.get('useTemplate') != owner.get('useTemplate'):
                 raise KerioError('Kerio user configuration changed; retry safely')
