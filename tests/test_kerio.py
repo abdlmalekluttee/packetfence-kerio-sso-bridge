@@ -43,6 +43,54 @@ class KerioTests(unittest.TestCase):
         with self.assertRaises(ValueError): c.logout('')
         self.assertEqual(c.calls,[])
 
+    def test_local_name_collision_warning_allows_exact_domain_resolution(self):
+        c=Appliance(); exchange=c._exchange
+        def response(payload,headers):
+            body=exchange(payload,headers)
+            if payload['method']=='Users.get':
+                body['result']['warnings']=[{'inputIndex':-1,'code':8003,
+                    'message':'Some user names are in conflict with users in the local user database.',
+                    'messageParameters':{'positionalParameters':[],'plurality':1}}]
+            return body
+        c._exchange=response
+        domain,user=c.resolve_user('alice@example.test')
+        self.assertEqual((domain,user['id']),('d1','u-alice'))
+        with self.assertRaises(KerioError):c.resolve_user('alice@other.test')
+        self.assertEqual(c.mutations(),[])
+
+    def test_directory_authentication_and_unknown_warnings_still_block(self):
+        for warnings in ([{'code':8004}],[{'code':9999}],
+                         [{'code':8003},{'code':8004}],{'code':8003},['8003']):
+            with self.subTest(warnings=warnings):
+                c=Appliance(); exchange=c._exchange
+                def response(payload,headers):
+                    body=exchange(payload,headers)
+                    if payload['method']=='Users.get':body['result']['warnings']=warnings
+                    return body
+                c._exchange=response
+                with self.assertRaises(KerioError):c.resolve_user('alice@example.test')
+                self.assertEqual(c.mutations(),[])
+
+    def test_name_collision_warning_does_not_hide_same_domain_duplicates(self):
+        c=Appliance();exchange=c._exchange
+        c.users.append({'id':'another-alice','credentials':{'userName':'alice'}})
+        def response(payload,headers):
+            body=exchange(payload,headers)
+            if payload['method']=='Users.get':body['result']['warnings']=[{'code':8003}]
+            return body
+        c._exchange=response
+        with self.assertRaisesRegex(KerioError,'not uniquely resolved'):
+            c.resolve_user('alice@example.test')
+
+    def test_name_collision_warning_is_not_accepted_on_other_calls_or_with_errors(self):
+        for method,result in [('Users.set',{'warnings':[{'code':8003}]}),
+                              ('ActiveHosts.get',{'warnings':[{'code':8003}]}),
+                              ('Users.get',{'warnings':[{'code':8003}],'errors':[{'code':8002}]})]:
+            with self.subTest(method=method):
+                c=Appliance()
+                c.fail[method]=lambda p:{'id':p['id'],'result':result}
+                with self.assertRaises(KerioError):c.call(method,{})
+
     def test_default_tls_and_ipv6_url(self):
         cfg={k:v for k,v in CONFIG.items() if k!='verify'}; cfg['host']='2001:db8::1'
         c=KerioClient(cfg)

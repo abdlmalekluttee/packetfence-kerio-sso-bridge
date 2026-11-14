@@ -154,7 +154,14 @@ class KerioClient:
         if 'result' not in body or not isinstance(body['result'], dict):
             raise KerioError('Kerio response missing result object')
         result = body['result']
-        if result.get('errors') or result.get('warnings'):
+        warnings = result.get('warnings')
+        # Users.get documents 8003 for local/domain short-name collisions.
+        # Domain-scoped lookup and unique full-identity checks remain mandatory.
+        # Authentication failures (8004), unknown warnings, and writes fail closed.
+        name_collision_only = (method == 'Users.get' and isinstance(warnings, list)
+                               and all(isinstance(w, dict) and w.get('code') == 8003
+                                       for w in warnings))
+        if result.get('errors') or (warnings and not name_collision_only):
             raise KerioError(f'Kerio {method} returned item errors or warnings')
         return result
 
