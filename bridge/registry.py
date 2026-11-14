@@ -6,14 +6,17 @@ import os
 import re
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from .kerio import KerioClient
+from .kerio import KerioClient, KerioError
 
 
 class Registry:
     def __init__(self, path):
         self.path = Path(path)
         self._lock = threading.RLock()
+        # Stable across client replacements/deletion; bounded even with ID churn.
+        self._operations = [threading.RLock() for _ in range(64)]
         self._entries = {}
         self._clients = {}
         if self.path.exists():
@@ -91,12 +94,33 @@ class Registry:
             if temp.exists():
                 temp.unlink()
 
-    def upsert(self, data):
-        with self._lock:
-            if not isinstance(data, dict):
-                raise ValueError('Target must be an object')
-            existing = self._entries.get(data.get('id'), {})
-            entry = self._validate(data, existing)
+    @contextmanager
+    def operation(self, eid, expected=None, pin=None):
+        lock = self._operations[hash(eid) % len(self._operations)]
+        if not lock.acquire(timeout=10):
+            raise KerioError('Target operation busy; retry pending')
+        try:
+            with self._lock:
+                client = self._clients.get(eid)
+                if expected is not None and client is not expected:
+                    raise KerioError('Target configuration changed; retry pending')
+                if pin is not None:
+                    pin()  # Durable binding and configuration publication are atomic locally.
+            yield client
+        finally:
+            lock.release()
+
+    def upsert(self, data, guard=None):
+        if not isinstance(data, dict):
+            raise ValueError('Target must be an object')
+        eid = data.get('id') or uuid.uuid4().hex
+        if not isinstance(eid, str) or not re.fullmatch('[A-Za-z0-9_-]{1,64}', eid):
+            raise ValueError('Invalid target ID')
+        with self.operation(eid), self._lock:
+            existing = self._entries.get(eid, {})
+            entry = self._validate({**data, 'id':eid}, existing)
+            if guard is not None:
+                guard(existing, entry)
             entries = {**self._entries, entry['id']:entry}
             if len(entries) > 64:
                 raise ValueError('Too many Kerio targets')
@@ -112,8 +136,12 @@ class Registry:
                 raise ValueError('Invalid target object/ID')
             return self._validate(data, self._entries.get(data.get('id'),{}))
 
-    def delete(self, eid):
-        with self._lock:
+    def delete(self, eid, guard=None):
+        if not isinstance(eid, str):
+            raise ValueError('Invalid target ID')
+        with self.operation(eid), self._lock:
+            if guard is not None:
+                guard(self._entries.get(eid, {'id':eid}), None)
             entries = {i:e for i,e in self._entries.items() if i != eid}
             self._save(entries)
             self._entries = entries

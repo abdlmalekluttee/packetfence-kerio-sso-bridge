@@ -23,6 +23,10 @@ rules intentionally fail closed. Kerio offers no atomic revision guard for this
 Users.set operation: avoid concurrent administrative edits to the same user's
 automatic-login list. The bridge rereads before writing and verifies afterward.
 It does not restore removed manual assignments on Stop or when the toggle is off.
+Policy saves serialize with in-flight target operations. A successful disable
+response means all operations using the old policy have finished; if the target
+is busy, the save can fail and must be retried. It does not cancel a removal that
+has already reached Kerio.
 
 ## Migration
 
@@ -55,6 +59,8 @@ Polling is best effort under API latency/outage and must not be interpreted as a
 hard revocation deadline. Never use this bridge as the sole time-critical access
 control mechanism. Lease expiry survives restart, but remote revocation cannot
 complete while Kerio is unreachable; pending status remains visible.
+Nonmutating reconciliation shares an indexed, two-second Active Hosts snapshot
+across leases. Logout and conflicting-identity changes still use fresh reads.
 
 Generic PacketFence events contain user/MAC/IP/role/timeout but no session sequence.
 Different-owner Stop events are ignored. A stale Stop for the *same* identity
@@ -66,6 +72,10 @@ upstream session identifier/sequence or authoritative session lookup extension.
 
 A changed device IP gets its own lease; the old lease is revoked by its matching
 Stop or expiry. Do not prematurely log out other IPs belonging to the same user.
+Kerio operations affect a host ID, including its IPv4/IPv6 aliases. A Stop or
+expiry preserves that host while another compatible alias lease is active.
+Conflicting desired identities on aliases fail without rebinding; resolve the
+PacketFence lease conflict instead of allowing repeated host-wide replacement.
 NAT/shared-IP and overlapping tenant networks need separate bridge instances or
 unambiguous routing; IP-only generic events cannot identify a tenant.
 
@@ -102,6 +112,9 @@ logs for manual-IP audits; the event records target/user ID/IP without passwords
 | Invalid/untrusted Kerio certificate | Connection refused with verify enabled |
 | Silent TCP peer on HTTPS port | Other clients continue receiving responses |
 | IPv6 aliases | Lookup matches canonical alias on the tested appliance |
+| One alias stops while another is active | No host logout until the last compatible lease ends |
+| Different identities on one host's aliases | Visible conflict; no repeated rebinding |
+| Override disabled during an operation | No old-policy removal after successful save response |
 | Container restart/disk-full | No false success or silently empty configuration |
 
 Record appliance build, PacketFence build, NAS model, accounting interval,

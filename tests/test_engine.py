@@ -1,6 +1,7 @@
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from bridge.engine import Engine
 from bridge.state import StateStore
@@ -8,9 +9,18 @@ from bridge.kerio import KerioError
 from tests.helpers import Appliance, Clock, host
 
 class Registry:
-    def __init__(self,*clients): self.clients={str(i):c for i,c in enumerate(clients)}
+    def __init__(self,*clients):
+        self.clients={str(i):c for i,c in enumerate(clients)}
+        self.lock=threading.RLock()
     def candidates(self,ip): return list(self.clients.items())
     def get_client(self,eid): return self.clients.get(eid)
+    @contextmanager
+    def operation(self,eid,expected=None,pin=None):
+        with self.lock:
+            client=self.clients.get(eid)
+            if expected is not None and client is not expected: raise KerioError('Target changed')
+            if pin is not None: pin()
+            yield client
 
 def event(user='alice', **kw):
     return {'ip':'192.0.2.10','user':user,'mac':'02:00:00:00:00:01','timeout':100,**kw}

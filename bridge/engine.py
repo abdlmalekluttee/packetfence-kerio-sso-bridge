@@ -55,9 +55,21 @@ class Engine:
         desired = 'stop' if method == 'Stop' else 'active'
         now = self.clock()
         ignored = [False]
+        # Resolve formatting before entering the state transaction: registry edits
+        # use registry -> state lock order, never the reverse.
+        prior = self.store.get(ip)
+        identity_target = prior.get('target') if prior else None
+        identity_client = self.registry.get_client(identity_target) if identity_target is not None else None
+        if identity_target is None:
+            candidates = self.registry.candidates(ip)
+            if len(candidates) == 1:
+                identity_target, identity_client = candidates[0]
 
         def receive(old):
-            same = old and old['user'] == user and (not old['mac'] or not mac or old['mac'] == mac)
+            same_user = old and old['user'] == user
+            if old and identity_client and old.get('target') in (None, identity_target):
+                same_user = identity_client.user_name(old['user']) == identity_client.user_name(user)
+            same = old and same_user and (not old['mac'] or not mac or old['mac'] == mac)
             if old and desired == 'stop' and not same:
                 ignored[0] = True
                 return None
@@ -117,23 +129,33 @@ class Engine:
             if not row or row.get('complete'):
                 return None
             if row['desired'] == 'active' and row['expires'] <= self.clock():
-                row = self._patch(row, desired='stop', generation=row['generation'] + 1, verified=0, next_try=0)
+                def expire(latest):
+                    if (latest and latest['generation'] == row['generation']
+                            and latest['desired'] == 'active' and latest['expires'] <= self.clock()):
+                        return {**latest, 'desired':'stop', 'generation':latest['generation'] + 1,
+                                'verified':0, 'next_try':0}
+                    return None
+                row = self.store.update(ip, expire)
+                if not row or row.get('complete'):
+                    return None
             if row['next_try'] > self.clock():
                 return row['error'] or 'Synchronization pending'
             try:
                 eid, client = self._select(row)
-                cfg = fingerprint(client)
-                if (not force and row['desired'] == 'active' and row['verified']
-                        and self.clock() - row['verified'] < self.verified_ttl and row['config'] == cfg):
-                    return None
-                self._patch(row, target=eid)
-                with client.transaction():
-                    host = client.host_by_ip(ip, fresh=force or bool(row['verified']) or row['desired'] == 'stop')
+                with self.registry.operation(eid, expected=client, pin=lambda: self._patch(row, target=eid)), client.transaction():
+                    cfg = fingerprint(client)
+                    if (not force and row['desired'] == 'active' and row['verified']
+                            and self.clock() - row['verified'] < self.verified_ttl and row['config'] == cfg):
+                        return None
+                    host = client.host_by_ip(ip, fresh=row['desired'] == 'stop')
                     if not self._current(row):
                         return 'Superseded; latest event pending'
                     expected = client.user_name(row['user'])
                     if row['desired'] == 'stop':
-                        if host and client.matches(host, expected) and self._mac_matches(row, host):
+                        siblings = self._siblings(row, eid, host) if host else []
+                        protected = any(client.user_name(other['user']) == expected and self._mac_matches(other, host)
+                                        for other in siblings)
+                        if host and not protected and client.matches(host, expected) and self._mac_matches(row, host):
                             client.logout(host['id'])
                             check = client.host_by_ip(ip, fresh=True)
                             if check and client.matches(check, expected):
@@ -151,6 +173,8 @@ class Engine:
                         if host is None or not self._mac_matches(row, host):
                             raise KerioError('Host changed before bind; retry pending')
                         if not client.matches(host, expected):
+                            if any(client.user_name(other['user']) != expected for other in self._siblings(row, eid, host)):
+                                raise KerioError('Conflicting active identities share this Kerio host; resolve alias leases')
                             client.prepare_conflict(host, ip, expected)
                             if not self._current(row):
                                 return 'Superseded; latest event pending'
@@ -182,6 +206,22 @@ class Engine:
                 return error
         finally:
             lock.release()
+
+    def _siblings(self, row, eid, host):
+        """Kerio login/logout affect every IP alias of the resolved host."""
+        siblings = []
+        for value in [host.get('ip')] + (host.get('ip6Addresses') or []):
+            try:
+                ip = str(ipaddress.ip_address(value))
+            except ValueError:
+                continue
+            if ip == row['ip']:
+                continue
+            other = self.store.get(ip)
+            if (other and other.get('target') == eid and not other.get('complete')
+                    and other['desired'] == 'active' and other['expires'] > self.clock()):
+                siblings.append(other)
+        return siblings
 
     @staticmethod
     def _mac_matches(row, host):

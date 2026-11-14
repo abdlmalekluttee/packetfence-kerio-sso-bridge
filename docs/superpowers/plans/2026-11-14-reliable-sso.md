@@ -1,12 +1,12 @@
 # Reliable SSO Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Eliminate repeated login churn and safely reconcile PacketFence identities, with an optional exact-IP manual-assignment override.
 
 **Architecture:** A small stdlib package separates Kerio API contracts, validated configuration, durable SQLite reconciliation, and the bounded HTTP/GUI boundary. Synchronous acknowledgement shares the same generation-aware reconciliation path as background retry/expiry; no per-event PacketFence polling or unbounded queue.
 
-**Tech Stack:** Python 3.12+, unittest, sqlite3, urllib, http.server, plain browser JavaScript, Docker Compose.
+**Tech Stack:** Python 3.12+, unittest, sqlite3, http.client, http.server, plain browser JavaScript, Docker Compose.
 
 **Spec:** `docs/superpowers/specs/reliable-sso.md`
 
@@ -39,40 +39,40 @@
 ### Task 1: Kerio read and session contracts
 **Files:** Create bridge/kerio.py, bridge/__init__.py, tests/test_kerio.py, tests/helpers.py.
 **Interfaces:** `KerioClient(cfg)`, `call(method, params) -> dict`, `host_by_ip(ip, fresh=False) -> dict|None`, `matches(host, username) -> bool`, `transaction()` context, `login_user(host_id,user)`, `logout(host_id)`.
-- [ ] Write tests: matching full domain (different domain false), canonical IPv6 aliases,
+- [x] Write tests: matching full domain (different domain false), canonical IPv6 aliases,
   pagination, session expiry retry, malformed/mismatched response failure, empty
   logout refusal, default TLS verification and CA settings.
-- [ ] Run `python -m unittest tests.test_kerio -v`; expect failures for missing behavior.
-- [ ] Implement bounded JSON-RPC responses, cookie handling, no redirects,
+- [x] Run `python -m unittest tests.test_kerio -v`; expect failures for missing behavior.
+- [x] Implement bounded JSON-RPC responses, cookie handling, no redirects,
   request deadline, response validation, pagination and short host snapshot cache.
-- [ ] Run tests; expect all pass. Commit `feat: add validated Kerio API client`.
+- [x] Run tests; expect all pass. Commit `feat: add validated Kerio API client`.
 
 ### Task 2: Optional exact-IP manual conflict override
 **Files:** Modify bridge/kerio.py; create tests/test_manual.py.
 **Interfaces:** `resolve_user(username) -> (domain_id,user)`, `prepare_conflict(host, ip, username) -> None` raises descriptive error when unsafe; emits audit event after verified Users.set.
-- [ ] Write tests for override disabled (no Users.set/logout), enabled removes only
+- [x] Write tests for override disabled (no Users.set/logout), enabled removes only
   one exact address, no mutation of desired user's assignment, unrelated settings
   preserved, missing target user, per-item errors, unsafe groups/MAC/template,
   configuration changed between reads, and post-write readback mismatch.
-- [ ] Run `python -m unittest tests.test_manual -v`; expect assertion failures.
-- [ ] Implement user/domain lookup on conflicts only, minimal autoLogin update,
+- [x] Run `python -m unittest tests.test_manual -v`; expect assertion failures.
+- [x] Implement user/domain lookup on conflicts only, minimal autoLogin update,
   independent readback and result.errors checks. Never use Users.remove.
-- [ ] Run tasks 1/2 tests; expect pass. Commit `feat: add opt-in manual IP conflict override`.
+- [x] Run tasks 1/2 tests; expect pass. Commit `feat: add opt-in manual IP conflict override`.
 
 ### Task 3: Durable idempotent synchronization
 **Files:** Create bridge/state.py, bridge/engine.py, tests/test_engine.py.
 **Interfaces:** `StateStore(path)`, `Engine(registry, store, clock=time.time)`,
   `handle(method, params) -> str|None`, `tick()`, `status()`, `start()/close()`.
   Registry contract `candidates(ip) -> list[(id,client)]`, `get_client(id)`.
-- [ ] Write tests for duplicate no-op (zero mutation), cache reduces reads, renew
+- [x] Write tests for duplicate no-op (zero mutation), cache reduces reads, renew
   expiry, identity replacement, old-user Stop ignored, failed Stop non-OK/retry,
   expiry/restart cleanup, simultaneous Start/Stop, bounded capacity/backoff,
   ambiguous targets, unknown Stop only matching owner, stale host MAC refusal.
-- [ ] Run `python -m unittest tests.test_engine -v`; expect missing behavior failures.
-- [ ] Implement SQLite transactional desired state, striped operation locks,
+- [x] Run `python -m unittest tests.test_engine -v`; expect missing behavior failures.
+- [x] Implement SQLite transactional desired state, striped operation locks,
   monotonically increasing generations, fresh reads before writes, target pinning,
   single background worker, positive cache, persisted backoff and expiry.
-- [ ] Run full suite; expect pass. Commit `feat: reconcile SSO leases without login churn`.
+- [x] Run full suite; expect pass. Commit `feat: reconcile SSO leases without login churn`.
 
 ### Task 4: Secure configuration, HTTP and GUI
 **Files:** Create bridge/registry.py, bridge/server.py, bridge/ui.html;
@@ -80,31 +80,31 @@
   tests/test_ui.js.
 **Interfaces:** `Registry(path).upsert(data)/delete(id)/public_list()/candidates(ip)/get_client(id)`,
   `create_server(address, registry, engine, settings)`, `main()`.
-- [ ] Write tests for failed save preserving snapshot, invalid CIDRs/types/hosts,
+- [x] Write tests for failed save preserving snapshot, invalid CIDRs/types/hosts,
   password omission, client reuse, secure defaults; HTTP auth, foreign origin,
   CSRF, JSON envelope/type/size checks, silent TLS peer, HTTP health and safe GUI
   name rendering/toggle save using DOM stub or browser.
-- [ ] Run suites and Node GUI check; expect failures before implementation.
-- [ ] Implement atomic 0600 JSON writes/0700 dirs, worker-limited HTTP with TLS
+- [x] Run suites and Node GUI check; expect failures before implementation.
+- [x] Implement atomic 0600 JSON writes/0700 dirs, worker-limited HTTP with TLS
   negotiation after accept, startup config validation, CSRF token/custom header,
   safe DOM listeners, policy checkbox and status endpoint. Preserve legacy JSON.
-- [ ] Run full suite; expect pass. Commit `fix: harden management and transport boundaries`.
+- [x] Run full suite; expect pass. Commit `fix: harden management and transport boundaries`.
 
 ### Task 5: Deployment, documentation and release verification
 **Files:** Modify Dockerfile, docker-compose.yml, deploy.sh, .env.example,
   .github/workflows/publish.yml, .gitignore; add .dockerignore,
   .github/workflows/test.yml, docs/operations.md, tests/test_deploy.py.
-- [ ] Write/run literal dotenv serialization regression and startup subprocess
+- [x] Write/run literal dotenv serialization regression and startup subprocess
   checks. Verify existing config survives deployment rather than rewriting it.
-- [ ] Package new modules/UI; real health probe; readonly container with tmpfs,
+- [x] Package new modules/UI; real health probe; readonly container with tmpfs,
   no-new-privileges and caps dropped; tests gate publication, Python 3.12/3.13 CI.
-- [ ] Document exact API assumptions, source links, option risks, trigger/role
+- [x] Document exact API assumptions, source links, option risks, trigger/role
   configuration, unknown timeout policy, migration, backups, rollback, live lab
   matrix, cached verification window and generic-protocol ordering limits.
-- [ ] Run `python -m unittest discover -v`, `node tests/test_ui.js`, compile checks,
+- [x] Run `python -m unittest discover -v`, `node tests/test_ui.js`, compile checks,
   Compose validation, container checks if engine is available, git diff --check.
-- [ ] Commit `chore: document and verify reliable SSO deployment`.
-- [ ] Fresh independent whole-branch review; reproduce/fix significant findings,
+- [x] Commit `chore: document and verify reliable SSO deployment`.
+- [x] Fresh independent whole-branch review; reproduce/fix significant findings,
   rerun full suite, retain plan and ledger evidence. Deliver branch and package.
 
 ## Execution notes

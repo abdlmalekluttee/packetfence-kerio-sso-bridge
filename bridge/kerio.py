@@ -4,6 +4,7 @@ import http.client
 import ipaddress
 import json
 import logging
+import socket
 import ssl
 import threading
 import time
@@ -92,8 +93,20 @@ class KerioClient:
         conn = http.client.HTTPSConnection(self.cfg['host'].strip('[]'),
                                           self.cfg.get('port', 4081),
                                           timeout=min(5., remaining), context=self._ctx)
+        connected = [None]
+        def abort():
+            transport = connected[0] or conn.sock
+            if transport:
+                try:
+                    transport.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                transport.close()
+        deadline = threading.Timer(remaining, abort)
+        deadline.daemon = True; deadline.start()
         try:
             conn.request('POST', '/admin/api/jsonrpc/', json.dumps(payload).encode(), headers)
+            connected[0] = conn.sock
             resp = conn.getresponse()
             if resp.status != 200:
                 raise KerioError(f'Kerio HTTP status {resp.status}')
@@ -120,6 +133,7 @@ class KerioClient:
             # Avoid leaking response bodies, tokens, credentials, or internal URLs.
             raise KerioError(f'Kerio transport failure ({type(ex).__name__})') from ex
         finally:
+            deadline.cancel()
             conn.close()
 
     def _raw(self, method, params, auth=True):
@@ -203,18 +217,18 @@ class KerioClient:
         with self.transaction():
             if fresh or self._hosts is None or self.clock() - self._hosts_at >= 2:
                 self._hosts = self._list('ActiveHosts.get')
+                self._host_index = {}
+                for host in self._hosts:
+                    addresses = set()
+                    for value in [host.get('ip')] + (host.get('ip6Addresses') or []):
+                        try:
+                            addresses.add(ipaddress.ip_address(value))
+                        except ValueError:
+                            continue
+                    for address in addresses:
+                        self._host_index.setdefault(address, []).append(host)
                 self._hosts_at = self.clock()
-            found = []
-            for host in self._hosts:
-                addresses = [host.get('ip')] + (host.get('ip6Addresses') or [])
-                for value in addresses:
-                    try:
-                        matches = ipaddress.ip_address(value) == addr
-                    except ValueError:
-                        continue
-                    if matches:
-                        found.append(host)
-                        break
+            found = self._host_index.get(addr, [])
             if len(found) > 1:
                 raise KerioError('Ambiguous active host IP')
             return copy.deepcopy(found[0]) if found else None

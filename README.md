@@ -14,7 +14,8 @@ runtime dependencies.
 | Different active user | Freshly verify ownership, validate the new user, replace and verify |
 | Conflicting manual automatic-login IP | Refuse by default; optional exact-IP removal |
 | Host missing / API unavailable | Persist failure and retry with backoff |
-| Stop / expiry | Revoke only a matching owner on the selected firewall |
+| Stop / expiry | Revoke a matching owner unless a compatible active IP alias still needs the host |
+| Different identities on aliases of one host | Refuse rebinding; report the conflicting leases |
 
 POST `/` accepts Start and Stop, plus Update as an extension. HTTP Basic uses
 BRIDGE_USER/BRIDGE_PASS. GET `/` is the management GUI using separate admin
@@ -32,6 +33,8 @@ The bridge preserves other addresses and account settings, verifies the write,
 then verifies the active login. It never deletes users. Shared address groups,
 MAC rules, inherited settings and non-exact address rules require manual resolution.
 Disabling the option prevents future removals; it does not restore earlier ones.
+Saving waits for any in-flight operation on that target. After a successful
+disable response, an older policy cannot perform another removal.
 The Kerio API account needs configuration-write permission for this feature.
 
 ## Install
@@ -121,6 +124,8 @@ Tests mock remote appliances and exercise real synchronization, persistence,
 HTTP/TLS, and GUI logic. CI runs Python 3.12/3.13 and a non-root container smoke test
 before publication. A real PacketFence/Kerio lab acceptance remains necessary;
 no new appliance version compatibility is claimed from mocks alone.
+See [review results](docs/review-results.md) for reproduced findings, fixes and
+the limits of local verification.
 
 ## License
 

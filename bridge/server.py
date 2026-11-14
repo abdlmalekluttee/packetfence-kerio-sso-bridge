@@ -19,6 +19,10 @@ from .state import StateStore
 LOG = logging.getLogger(__name__)
 
 
+class ConfigurationConflict(ValueError):
+    pass
+
+
 @dataclass
 class Settings:
     bridge_user: str = ''
@@ -194,26 +198,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({'jsonrpc':'2.0','id':rid,'result':['Unable to persist or process event']})
         if not isinstance(body,dict):
             return self._send({'error':'Object required'},400)
+        def guard(current, proposed):
+            identity_fields = ('host','port','subnets','prefix','suffix','default_domain')
+            changed = proposed is None or (current and any(proposed[k] != current[k] for k in identity_fields))
+            if changed and any(r['target'] == current['id'] and not r['complete']
+                               for r in self.server.engine.store.all()):
+                raise ConfigurationConflict('Drain target leases before deletion or changing host, routing or username settings')
         try:
             if self.path == '/api/kerios':
-                proposed = self.server.registry.proposed(body)
-                current = self.server.registry.get_client(proposed['id'])
-                identity_fields = ('host','port','subnets','prefix','suffix','default_domain')
-                if current and any(proposed[k] != current.cfg[k] for k in identity_fields):
-                    if any(r['target']==proposed['id'] and not r['complete'] for r in self.server.engine.store.all()):
-                        return self._send({'error':'Drain target leases before changing host, routing or username settings'},409)
-                return self._send({'id':self.server.registry.upsert(body)})
+                return self._send({'id':self.server.registry.upsert(body, guard=guard)})
             if self.path == '/api/kerios/delete':
-                # Retain connection details until every associated lease is revoked.
-                if any(r['target']==body.get('id') and not r['complete'] for r in self.server.engine.store.all()):
-                    return self._send({'error':'Target has active or pending leases; revoke them before deletion'},409)
-                self.server.registry.delete(body.get('id'))
+                self.server.registry.delete(body.get('id'), guard=guard)
                 return self._send({'ok':True})
             if self.path == '/api/kerios/test':
-                client = self.server.registry.get_client(body.get('id'))
-                if not client:
-                    return self._send({'error':'Target not found'},404)
-                return self._send({'ok':True,'activeHosts':client.test()})
+                eid = body.get('id')
+                if not isinstance(eid, str): raise ValueError('Invalid target ID')
+                with self.server.registry.operation(eid) as client:
+                    if not client:
+                        return self._send({'error':'Target not found'},404)
+                    return self._send({'ok':True,'activeHosts':client.test()})
+        except ConfigurationConflict as ex:
+            return self._send({'error':str(ex)},409)
         except ValueError as ex:
             return self._send({'error':str(ex)},400)
         except Exception as ex:
