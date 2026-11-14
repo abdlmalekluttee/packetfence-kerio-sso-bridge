@@ -62,7 +62,8 @@ class Engine:
             if prior and self.registry.ignores_user(prior['user']):
                 self._ignore(prior)
             return None
-        identity_target = prior.get('target') if prior else None
+        retired = prior and prior.get('complete') and prior['desired'] == 'ignored'
+        identity_target = prior.get('target') if prior and not retired else None
         identity_client = self.registry.get_client(identity_target) if identity_target is not None else None
         if identity_target is None:
             candidates = self.registry.candidates(ip, user)
@@ -70,8 +71,9 @@ class Engine:
                 identity_target, identity_client = candidates[0]
 
         def receive(old):
+            old_target = old.get('target') if old and not (old.get('complete') and old['desired']=='ignored') else None
             same_user = old and old['user'] == user
-            if old and identity_client and old.get('target') in (None, identity_target):
+            if old and identity_client and old_target in (None, identity_target):
                 same_user = identity_client.user_name(old['user']) == identity_client.user_name(user)
             same = old and same_user and (not old['mac'] or not mac or old['mac'] == mac)
             if old and desired == 'stop' and not same:
@@ -82,7 +84,7 @@ class Engine:
                         'updated':now, 'mac':mac or old['mac']}
             return {'ip':ip, 'user':user, 'mac':mac, 'desired':desired,
                     'generation':(old['generation'] + 1) if old else 1,
-                    'target':old.get('target') if old else None,
+                    'target':old_target,
                     'expires':now + ttl, 'verified':0, 'next_try':0, 'attempts':0,
                     'error':None, 'complete':False, 'updated':now, 'config':None}
 

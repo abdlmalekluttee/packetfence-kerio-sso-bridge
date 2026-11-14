@@ -96,6 +96,20 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.store.get('192.0.2.10'),before)
         self.assertEqual(self.client.calls,[])
 
+    def test_retired_excluded_lease_can_use_new_domain_target(self):
+        self.client.cfg['domains']=['example.test']
+        self.assertIsNone(self.engine.handle('Start',event('alice@example.test')))
+        self.client.cfg['domains']=['other.test']
+        self.clock.advance(61);self.engine.tick()
+        self.assertEqual(self.store.get('192.0.2.10')['desired'],'ignored')
+        self.assertTrue(self.store.get('192.0.2.10')['complete'])
+        second=Appliance({'domains':['example.test']});second.clock=self.clock
+        self.registry.clients['second']=second;self.client.calls.clear()
+        self.assertIsNone(self.engine.handle('Start',event('alice@example.test')))
+        self.assertEqual(self.store.get('192.0.2.10')['target'],'second')
+        self.assertEqual(self.client.calls,[])
+        self.assertEqual(second.mutations(),[])
+
     def test_domain_routing_selects_only_the_matching_firewall(self):
         self.client.cfg['domains']=['example.test']
         second=Appliance({'domains':['other.test'],'default_domain':'other.test'})
@@ -104,6 +118,35 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.store.get('192.0.2.10')['target'],'second')
         self.assertEqual(self.client.calls,[])
         self.assertEqual(second.mutations(),[])
+
+    def test_retired_alias_accepts_equivalent_stop_on_new_target(self):
+        self.client.cfg.update(domains=['example.test'],domain_aliases={'example':'example.test'})
+        self.engine.handle('Start',event('alice@example'))
+        self.client.cfg['domains']=['other.test'];self.clock.advance(61);self.engine.tick()
+        second=Appliance({'domains':['example.test'],'domain_aliases':{'example':'example.test'}})
+        second.clock=self.clock;self.registry.clients['second']=second;self.client.calls.clear()
+        self.assertIsNone(self.engine.handle('Stop',event('alice@example.test')))
+        self.assertEqual(self.store.get('192.0.2.10')['target'],'second')
+        self.assertEqual(self.store.get('192.0.2.10')['desired'],'stop')
+        self.assertEqual(self.client.calls,[])
+        self.assertEqual([m for m,p in second.mutations()],['ActiveHosts.logout'])
+
+    def test_retired_snapshot_cannot_clear_a_concurrently_active_target_pin(self):
+        self.client.cfg['domains']=['example.test']
+        self.engine.handle('Start',event('alice@example.test'))
+        self.client.cfg['domains']=['other.test'];self.clock.advance(61);self.engine.tick()
+        second=Appliance({'domains':['example.test']});second.clock=self.clock
+        self.registry.clients['second']=second;self.client.calls.clear()
+        original=self.store.update;injected=[False]
+        def intervening(ip,transform):
+            if not injected[0]:
+                injected[0]=True
+                original(ip,lambda old:{**old,'desired':'active','complete':False,'generation':old['generation']+1})
+            return original(ip,transform)
+        self.store.update=intervening
+        self.assertIn('Assigned',self.engine.handle('Start',event('alice@example.test')))
+        self.assertEqual(self.store.get('192.0.2.10')['target'],'0')
+        self.assertEqual(self.client.calls+second.calls,[])
 
     def test_renewal_refreshes_expiry_without_login(self):
         self.engine.handle('Start',event()); self.clock.advance(20)
