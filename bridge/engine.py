@@ -58,10 +58,14 @@ class Engine:
         # Resolve formatting before entering the state transaction: registry edits
         # use registry -> state lock order, never the reverse.
         prior = self.store.get(ip)
+        if self.registry.ignores_user(user):
+            if prior and self.registry.ignores_user(prior['user']):
+                self._ignore(prior)
+            return None
         identity_target = prior.get('target') if prior else None
         identity_client = self.registry.get_client(identity_target) if identity_target is not None else None
         if identity_target is None:
-            candidates = self.registry.candidates(ip)
+            candidates = self.registry.candidates(ip, user)
             if len(candidates) == 1:
                 identity_target, identity_client = candidates[0]
 
@@ -104,8 +108,10 @@ class Engine:
             client = self.registry.get_client(row['target'])
             if client is None or not client.cfg.get('enabled', True):
                 raise KerioError('Assigned Kerio target missing or disabled; restore it to reconcile')
+            if not client.accepts_user(row['user']):
+                raise KerioError('Assigned Kerio target does not serve this domain; controlled migration required')
             return row['target'], client
-        candidates = self.registry.candidates(row['ip'])
+        candidates = self.registry.candidates(row['ip'], row['user'])
         if not candidates:
             raise KerioError('No configured Kerio target for IP')
         if len(candidates) == 1:
@@ -120,6 +126,10 @@ class Engine:
             raise KerioError('No active host on configured targets')
         return matches[0]
 
+    def _ignore(self, row):
+        self._patch(row, desired='ignored', complete=True, error=None, attempts=0,
+                    next_try=0, updated=self.clock(), generation=row['generation'] + 1)
+
     def _reconcile(self, ip, force=False):
         lock = self._locks[hash(ip) % len(self._locks)]
         if not lock.acquire(timeout=10):
@@ -127,6 +137,9 @@ class Engine:
         try:
             row = self.store.get(ip)
             if not row or row.get('complete'):
+                return None
+            if self.registry.ignores_user(row['user']):
+                self._ignore(row)
                 return None
             if row['desired'] == 'active' and row['expires'] <= self.clock():
                 def expire(latest):

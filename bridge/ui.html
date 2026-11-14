@@ -4,7 +4,7 @@
 <body><header><h1>PacketFence → Kerio SSO Bridge</h1><p>Identity synchronization and firewall settings</p></header>
 <main><section aria-labelledby="status-title"><h2 id="status-title">Synchronization</h2><p id="status" role="status">Loading…</p><div id="pending"></div></section>
 <section aria-labelledby="targets-title"><h2 id="targets-title">Kerio firewalls</h2>
-<div class="table-wrap"><table><thead><tr><th>Name</th><th>Host</th><th>API user</th><th>Subnets</th><th>Policy</th><th>Actions</th></tr></thead><tbody id="targets"></tbody></table></div></section>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Host</th><th>API user</th><th>Domains</th><th>Subnets</th><th>Policy</th><th>Actions</th></tr></thead><tbody id="targets"></tbody></table></div></section>
 <section><h2 id="form-title">Add Kerio firewall</h2><form id="target-form">
 <input type="hidden" id="id"><div class="grid">
 <label>Name<input id="name" required maxlength="128"></label>
@@ -13,6 +13,8 @@
 <label>API username<input id="user" required autocomplete="off"></label>
 <label>API password<input id="password" type="password" autocomplete="new-password" placeholder="Leave blank to keep existing"></label>
 <label>Default domain<input id="default_domain" placeholder="example.test"></label>
+<label>Handled domains (comma-separated)<input id="domains" placeholder="hiss.local, tanasuh.local"></label>
+<label>Short-domain aliases (JSON)<input id="domain_aliases" placeholder='{"hiss":"hiss.local"}'></label>
 <label>Username prefix<input id="prefix"></label><label>Username suffix<input id="suffix"></label>
 <label>Subnets (comma-separated CIDRs)<input id="subnets" placeholder="192.0.2.0/24; blank matches any"></label>
 <label>Private CA file (inside container)<input id="ca_file" placeholder="/certs/kerio-ca.pem"></label>
@@ -20,6 +22,6 @@
 <label><input id="verify" type="checkbox" checked> Verify Kerio TLS certificate</label></div>
 <label class="policy"><input id="override_manual" type="checkbox"> Allow removal of conflicting manual IP assignments</label>
 <p class="help">Off by default. When enabled, a different PacketFence user can replace an exact automatic-login IP assignment in Kerio. Other addresses and account settings are preserved. Shared groups, MAC rules and inherited rules require manual resolution. Disabling this option does not restore previously removed assignments.</p>
-<p class="help">Matching logins stay unchanged. Default domain applies only to usernames without a realm. Test checks API connectivity, not all write permissions.</p>
+<p class="help">Matching logins stay unchanged. Default domain applies only to usernames without a realm. Short-domain aliases are explicit mappings, applied before domain routing. Blank handled domains accepts any domain; use local for local accounts. Domains excluded from every target are ignored without changing Kerio. Domain and subnet scopes must both match. Test checks API connectivity, not all write permissions.</p>
 <div class="actions"><button type="submit">Save firewall</button><button id="clear" type="button" class="secondary">Clear</button><span id="message" role="status"></span></div>
 </form></section></main></body></html>

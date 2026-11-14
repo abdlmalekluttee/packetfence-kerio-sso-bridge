@@ -16,6 +16,11 @@ automatic-login IP from the previous user's Kerio configuration.
   PacketFence API poll per event, is authoritative. Require user and IP for Stop.
 - Canonicalize IPs and compare full usernames without dropping domains. Configure
   `default_domain` explicitly to reconcile a bare username with a domain user.
+- Per-target `domain_aliases` resolves explicitly configured short realms before
+  identity comparison and routing; never guess or strip a realm. Per-target
+  `domains` intersects IP scope. Empty accepts any domain; `local` selects local
+  identities. Domains excluded by every configured target are acknowledged and
+  retired without remote changes. Disabled targets retain domain ownership.
 - Matching events refresh durable lease metadata; cache positive verification for
   30 seconds, share active-host snapshots for 2 seconds, reconcile every 60 seconds.
 - SQLite stores desired state, generation, selected target, expiry and retry
@@ -48,7 +53,9 @@ automatic-login IP from the previous user's Kerio configuration.
 - Atomic validated target configuration; restrictive secret/state permissions.
 - CI tests before publish; deployment preserves literal passwords and existing
   settings. Include migration, rollback, monitoring, and live acceptance guidance.
-- Do not push, publish, deploy, or modify a real firewall during this task.
+- Initial review was read-only. Subsequent user authorization covers PR creation,
+  CI fixes, merge and supervised deployment. Live follow-up tests must preserve
+  active users; the library domain is excluded until its separate Kerio is added.
 
 ## API research (2026-11-14)
 Primary sources, with narrow interpretations rather than SDK assumptions:

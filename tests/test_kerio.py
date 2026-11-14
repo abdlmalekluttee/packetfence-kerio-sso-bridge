@@ -13,6 +13,18 @@ class KerioTests(unittest.TestCase):
         self.assertFalse(c.matches(host(domain='other.test'), 'alice@example.test'))
         self.assertFalse(c.matches(host(), 'alice@other.test'))
 
+    def test_explicit_short_domain_alias_is_shared_by_comparison_and_lookup(self):
+        c=Appliance({'domain_aliases':{'example':'example.test'}})
+        for name in ('alice@EXAMPLE',r'EXAMPLE\alice','alice@example.test'):
+            with self.subTest(name=name):
+                self.assertEqual(c.user_name(name),'alice@example.test')
+                self.assertTrue(c.matches(host(),name))
+                self.assertEqual(c.resolve_user(name)[1]['id'],'u-alice')
+        self.assertFalse(c.matches(host(),'alice@other'))
+        self.assertFalse(c.matches(host(domain='other.test'),'alice@example'))
+        self.assertFalse(Appliance().matches(host(),'alice@example'))
+        self.assertEqual(c.mutations(),[])
+
     def test_ipv6_alias_and_pagination(self):
         c=Appliance(); c.page_size=1
         c.hosts=[host(ip='192.0.2.11'),host(ip='192.0.2.10')]

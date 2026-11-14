@@ -43,6 +43,35 @@ write includes only autoLogin: it never disables the template or writes its
 rights/quotas. Enabled MAC or address-group automatic-login rules still block
 automatic removal, and concurrent template-setting changes abort the write.
 
+## Domain routing and short realms
+
+Each Kerio target has a `domains` list, intersected with its `subnets` list.
+For example, one firewall can serve `["hiss.local", "tanasuh.local"]` and another
+`["library.local"]`. An empty domains list accepts any domain for backward
+compatibility. `local` selects unqualified users when no default domain or suffix
+is configured. Avoid overlapping domain/subnet scopes across firewalls.
+
+Configure explicit `domain_aliases`, for example
+`{"hiss":"hiss.local", "tanasuh":"tanasuh.local"}`. Then `lab@hiss`,
+`HISS\lab`, and `lab@hiss.local` identify the same account. Aliases are resolved
+before domain routing, user lookup, session comparison and login. No suffix is
+guessed and unrelated domains remain distinct. Correct existing sessions and
+cached renewals require no login/logout writes or extra directory queries.
+
+If every configured target excludes a domain, its events are acknowledged
+without contacting Kerio. Existing leases for that excluded domain are retired
+as ignored during reconciliation, without logging users out. This deliberately
+stops managing them, including future expiry logout. A disabled target still
+owns its domains: its events remain pending instead of being discarded. With no
+targets configured, events remain pending. Configure **every** target's domain
+scope explicitly to exclude a domain; a target with an empty list accepts all.
+
+Domain and alias edits use the active-lease guard. Existing leases stay pinned to
+their target ID and cannot automatically transfer between firewalls. Drain or
+plan a controlled migration before changing an active target's identity policy.
+Domains do not make overlapping tenant IP spaces safe: state is still keyed by
+IP. Use separate bridge instances for overlapping tenant networks.
+
 ## Migration
 
 1. Schedule a maintenance window. Record exact PacketFence/Kerio versions and

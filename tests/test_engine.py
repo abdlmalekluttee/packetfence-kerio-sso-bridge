@@ -12,7 +12,10 @@ class Registry:
     def __init__(self,*clients):
         self.clients={str(i):c for i,c in enumerate(clients)}
         self.lock=threading.RLock()
-    def candidates(self,ip): return list(self.clients.items())
+    def candidates(self,ip,user=None):
+        return [(i,c) for i,c in self.clients.items() if user is None or c.accepts_user(user)]
+    def ignores_user(self,user):
+        return bool(self.clients) and not any(c.accepts_user(user) for c in self.clients.values())
     def get_client(self,eid): return self.clients.get(eid)
     @contextmanager
     def operation(self,eid,expected=None,pin=None):
@@ -39,6 +42,68 @@ class EngineTests(unittest.TestCase):
         for i in range(30): self.assertIsNone(self.engine.handle('Update',event()))
         self.assertEqual(self.client.mutations(),[])
         self.assertEqual(len(self.client.calls),count)
+
+    def test_alias_renewals_keep_correct_session_and_equivalent_stop_is_recognized(self):
+        self.client.cfg['domain_aliases']={'example':'example.test'}
+        self.assertIsNone(self.engine.handle('Start',event('alice@example')))
+        count=len(self.client.calls)
+        for name in (r'EXAMPLE\alice','alice@example.test','alice@EXAMPLE')*10:
+            self.assertIsNone(self.engine.handle('Update',event(name)))
+        self.assertEqual(len(self.client.calls),count)
+        self.assertEqual(self.client.mutations(),[])
+        self.assertIsNone(self.engine.handle('Stop',event('alice@example.test')))
+        self.assertEqual(self.client.hosts[0]['user']['name'],'')
+
+    def test_alias_login_uses_canonical_domain_after_exact_user_validation(self):
+        self.client.cfg['domain_aliases']={'example':'example.test'}
+        self.client.hosts[0]=host(user='')
+        self.assertIsNone(self.engine.handle('Start',event('bob@example')))
+        self.assertEqual(self.client.hosts[0]['user']['name'],'bob')
+        self.assertEqual([p['userName'] for m,p in self.client.mutations() if m=='ActiveHosts.login'],
+                         ['bob@example.test'])
+
+    def test_excluded_domain_events_leave_active_users_untouched_and_retire_pending(self):
+        self.client.cfg['domains']=['example.test']
+        self.assertIsNone(self.engine.handle('Start',event('alice@unmanaged.test')))
+        self.assertEqual(self.client.calls,[])
+        self.assertIsNone(self.store.get('192.0.2.10'))
+        self.client.cfg['domains']=[]
+        self.engine.handle('Start',event('alice@unmanaged.test'))
+        self.client.calls.clear();self.client.cfg['domains']=['example.test']
+        self.clock.advance(5);self.engine.tick()
+        self.assertEqual(self.client.calls,[])
+        self.assertTrue(self.store.get('192.0.2.10')['complete'])
+        self.assertEqual(self.store.get('192.0.2.10')['desired'],'ignored')
+        self.assertEqual(self.engine.status()['pending'],0)
+        self.assertEqual(self.client.hosts[0]['user']['name'],'alice')
+
+    def test_domain_scope_prevents_pinned_session_from_moving_to_another_firewall(self):
+        self.client.cfg['domains']=['example.test']
+        second=Appliance({'domains':['other.test'],'default_domain':'other.test'})
+        second.hosts=[host(domain='other.test')];self.registry.clients['second']=second
+        self.assertIsNone(self.engine.handle('Start',event('alice@example.test')))
+        self.client.calls.clear();second.calls.clear()
+        result=self.engine.handle('Start',event('alice@other.test'))
+        self.assertIn('Assigned',result)
+        self.assertEqual(self.client.mutations()+second.mutations(),[])
+
+    def test_excluded_events_preserve_existing_managed_lease(self):
+        self.client.cfg['domains']=['example.test']
+        self.assertIsNone(self.engine.handle('Start',event('alice@example.test')))
+        before=self.store.get('192.0.2.10');self.client.calls.clear()
+        for method in ('Start','Update','Stop'):
+            self.assertIsNone(self.engine.handle(method,event('alice@unmanaged.test')))
+        self.assertEqual(self.store.get('192.0.2.10'),before)
+        self.assertEqual(self.client.calls,[])
+
+    def test_domain_routing_selects_only_the_matching_firewall(self):
+        self.client.cfg['domains']=['example.test']
+        second=Appliance({'domains':['other.test'],'default_domain':'other.test'})
+        second.hosts=[host(domain='other.test')];self.registry.clients['second']=second
+        self.assertIsNone(self.engine.handle('Start',event('alice@other.test')))
+        self.assertEqual(self.store.get('192.0.2.10')['target'],'second')
+        self.assertEqual(self.client.calls,[])
+        self.assertEqual(second.mutations(),[])
 
     def test_renewal_refreshes_expiry_without_login(self):
         self.engine.handle('Start',event()); self.clock.advance(20)
