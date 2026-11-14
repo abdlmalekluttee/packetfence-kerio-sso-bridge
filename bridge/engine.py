@@ -9,6 +9,10 @@ import time
 from .kerio import KerioError, normalized_user
 
 LOG = logging.getLogger(__name__)
+HOST_MISSING = 'Host not yet present in Kerio; retry pending'
+MISSING_HOST_ERRORS = (HOST_MISSING, 'No active host on configured targets')
+PRESENCE_COOLDOWN = 5
+PRESENCE_WINDOW = 10
 
 
 def mac_key(value):
@@ -80,13 +84,22 @@ class Engine:
                 ignored[0] = True
                 return None
             if same and old['desired'] == desired and not old.get('complete'):
-                return {**old, 'expires':now + ttl if desired == 'active' else old['expires'],
-                        'updated':now, 'mac':mac or old['mac']}
+                renewed = {**old, 'expires':now + ttl if desired == 'active' else old['expires'],
+                           'updated':now, 'mac':mac or old['mac']}
+                if desired == 'active':
+                    renewed['presence_until'] = now + PRESENCE_WINDOW
+                    if old.get('error') in MISSING_HOST_ERRORS:
+                        # An event is a presence hint, not proof of a new session.
+                        # Coalesce concurrent hints using durable per-IP timing.
+                        renewed['next_try'] = min(old['next_try'],
+                            max(now, old.get('presence_retry_after', 0)))
+                return renewed
             return {'ip':ip, 'user':user, 'mac':mac, 'desired':desired,
                     'generation':(old['generation'] + 1) if old else 1,
                     'target':old_target,
                     'expires':now + ttl, 'verified':0, 'next_try':0, 'attempts':0,
-                    'error':None, 'complete':False, 'updated':now, 'config':None}
+                    'error':None, 'complete':False, 'updated':now, 'config':None,
+                    'presence_until':now + PRESENCE_WINDOW if desired == 'active' else 0}
 
         record = self.store.update(ip, receive)  # commit before any remote side effect
         if ignored[0]:
@@ -179,7 +192,7 @@ class Engine:
                                     verified=self.clock(), updated=self.clock())
                         return None
                     if host is None:
-                        raise KerioError('Host not yet present in Kerio; retry pending')
+                        raise KerioError(HOST_MISSING)
                     if not self._mac_matches(row, host):
                         raise KerioError('PacketFence and Kerio MAC differ; refusing stale IP binding')
                     if not client.matches(host, expected):
@@ -215,8 +228,20 @@ class Engine:
                 # Only controlled API errors reach clients; no secrets from arbitrary exceptions.
                 error = str(ex) if isinstance(ex, KerioError) else f'Synchronization failed ({type(ex).__name__})'
                 attempts = row['attempts'] + 1
-                self._patch(row, error=error, attempts=attempts,
-                            next_try=self.clock() + min(300, 2 ** min(attempts, 9)))
+                def failed(latest):
+                    if not latest or latest['generation'] != row['generation']:
+                        return None
+                    now = self.clock()
+                    changes = {'error':error, 'attempts':attempts,
+                               'next_try':now + min(300, 2 ** min(attempts, 9))}
+                    if error in MISSING_HOST_ERRORS and latest['desired'] == 'active':
+                        changes['presence_retry_after'] = now + PRESENCE_COOLDOWN
+                        # Read the latest event deadline inside the transaction:
+                        # an event can arrive while the Kerio read is in flight.
+                        if latest.get('presence_until', 0) > now:
+                            changes['next_try'] = now + PRESENCE_COOLDOWN
+                    return {**latest, **changes}
+                self.store.update(row['ip'], failed)
                 LOG.warning('sync_pending ip=%s reason=%s', ip, error)
                 return error
         finally:

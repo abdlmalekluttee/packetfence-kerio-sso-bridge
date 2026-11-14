@@ -13,7 +13,8 @@ runtime dependencies.
 | Host is present without a user | Validate and log in the PacketFence user |
 | Different active user | Freshly verify ownership, validate the new user, replace and verify |
 | Conflicting manual automatic-login IP | Refuse by default; optional exact-IP removal |
-| Host missing / API unavailable | Persist failure and retry with backoff |
+| Host missing | Retry with backoff; new active events allow bounded prompt presence checks |
+| API unavailable | Persist failure and retry with backoff |
 | Stop / expiry | Revoke a matching owner unless a compatible active IP alias still needs the host |
 | Different identities on aliases of one host | Refuse rebinding; report the conflicting leases |
 
@@ -98,7 +99,12 @@ API references are in [the specification](docs/superpowers/specs/reliable-sso.md
 | FALLBACK_TTL | 3600 seconds for missing/zero Start timeout |
 
 Positive PacketFence timeouts set lease expiry directly. Failed operations remain
-pending with 2..300-second retry backoff. State capacity is 10000 IPs; completed
+pending with 2..300-second retry backoff. For a missing host, an authenticated
+Start/Update opens a ten-second presence-check window and can shorten an old
+retry timer, with a five-second per-IP cooldown. The existing shared two-second
+host snapshot coalesces reads across IPs. Correctly signed-in users still require
+no login/logout; API failures and policy conflicts keep their normal backoff.
+State capacity is 10000 IPs; completed
 revocations are retained for one hour then pruned. One service instance per state
 directory; do not share the SQLite/JSON files between replicas.
 
