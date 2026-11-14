@@ -15,3 +15,4 @@ Ruling: no per-event PacketFence polling; generic protocol has no session sequen
 so same-identity out-of-order sessions remain a documented integration limitation.
 `nTask 1: complete — initial missing-module RED; 7/7 client contract tests GREEN. Runtime uses direct HTTPS without redirect/proxy credential forwarding.
 Task 2: complete — missing prepare_conflict RED; full suite 16/16 GREEN. Exact-IP removal verified, broad rules and disabled policy refuse writes.
+Task 3: complete — missing engine RED; full suite 29/29 GREEN. Durable generation checks, positive cache, retry backoff, expiry and manual-override end-to-end verified.

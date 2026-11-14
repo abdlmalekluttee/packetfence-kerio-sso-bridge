@@ -1,0 +1,122 @@
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from bridge.engine import Engine
+from bridge.state import StateStore
+from bridge.kerio import KerioError
+from tests.helpers import Appliance, Clock, host
+
+class Registry:
+    def __init__(self,*clients): self.clients={str(i):c for i,c in enumerate(clients)}
+    def candidates(self,ip): return list(self.clients.items())
+    def get_client(self,eid): return self.clients.get(eid)
+
+def event(user='alice', **kw):
+    return {'ip':'192.0.2.10','user':user,'mac':'02:00:00:00:00:01','timeout':100,**kw}
+
+class EngineTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.clock=Clock(); self.client=Appliance(); self.registry=Registry(self.client)
+        self.store=StateStore(str(Path(self.tmp.name)/'state.db'))
+        self.addCleanup(self.store.close)
+        self.engine=Engine(self.registry,self.store,clock=self.clock)
+
+    def test_matching_user_and_duplicate_events_do_not_mutate_or_refetch(self):
+        self.assertIsNone(self.engine.handle('Start',event()))
+        count=len(self.client.calls)
+        for i in range(30): self.assertIsNone(self.engine.handle('Update',event()))
+        self.assertEqual(self.client.mutations(),[])
+        self.assertEqual(len(self.client.calls),count)
+
+    def test_renewal_refreshes_expiry_without_login(self):
+        self.engine.handle('Start',event()); self.clock.advance(20)
+        self.engine.handle('Update',event())
+        self.clock.advance(81); self.engine.tick()
+        self.assertEqual(self.client.hosts[0]['user']['name'],'alice')
+        self.clock.advance(20); self.engine.tick()
+        self.assertEqual(self.client.hosts[0]['user']['name'],'')
+
+    def test_identity_change_and_old_owner_stop(self):
+        self.engine.handle('Start',event())
+        self.assertIsNone(self.engine.handle('Start',event('bob')))
+        self.assertEqual(self.client.hosts[0]['user']['name'],'bob')
+        self.client.calls.clear()
+        self.assertIsNone(self.engine.handle('Stop',event('alice')))
+        self.assertEqual(self.client.mutations(),[])
+
+    def test_failed_stop_is_pending_and_retried(self):
+        self.engine.handle('Start',event())
+        self.client.fail['ActiveHosts.logout']=KerioError('offline')
+        self.assertIsNotNone(self.engine.handle('Stop',event()))
+        self.assertEqual(self.engine.status()['pending'],1)
+        self.client.fail.clear(); self.clock.advance(3); self.engine.tick()
+        self.assertEqual(self.client.hosts[0]['user']['name'],'')
+        self.assertEqual(self.engine.status()['pending'],0)
+
+    def test_restart_reconciles_expired_lease(self):
+        self.engine.handle('Start',event(timeout=1)); self.clock.advance(2)
+        restarted=Engine(self.registry,self.store,clock=self.clock)
+        restarted.tick()
+        self.assertEqual(self.client.hosts[0]['user']['name'],'')
+
+    def test_unknown_stop_cannot_revoke_someone_else(self):
+        self.assertIsNone(self.engine.handle('Stop',event('bob')))
+        self.assertEqual(self.client.mutations(),[])
+
+    def test_ambiguous_firewalls_never_receive_mutation(self):
+        second=Appliance(); self.registry.clients['second']=second
+        self.assertIn('ambiguous',self.engine.handle('Start',event()).lower())
+        self.assertEqual(self.client.mutations()+second.mutations(),[])
+
+    def test_mac_mismatch_refuses_identity_binding(self):
+        self.client.hosts[0]['macAddress']='02:00:00:00:00:99'
+        self.assertIsNotNone(self.engine.handle('Start',event('bob')))
+        self.assertEqual(self.client.mutations(),[])
+
+    def test_stop_supersedes_inflight_start(self):
+        self.client.hosts[0]=host(user=''); reached=threading.Event(); release=threading.Event()
+        original=self.client.prepare_conflict
+        def pause(*a):
+            original(*a); reached.set(); self.assertTrue(release.wait(3))
+        self.client.prepare_conflict=pause
+        out=[]
+        start=threading.Thread(target=lambda:out.append(self.engine.handle('Start',event())))
+        start.start(); self.assertTrue(reached.wait(2))
+        stop=threading.Thread(target=lambda:out.append(self.engine.handle('Stop',event())))
+        stop.start()
+        # Wait for durable desired state, not a scheduler-dependent sleep.
+        for _ in range(200):
+            if self.store.get('192.0.2.10')['desired']=='stop': break
+            threading.Event().wait(.005)
+        self.assertEqual(self.store.get('192.0.2.10')['desired'],'stop')
+        release.set(); start.join(3); stop.join(3)
+        self.assertFalse(start.is_alive() or stop.is_alive())
+        self.assertEqual(self.client.hosts[0]['user']['name'],'')
+
+    def test_backoff_coalesces_repeated_failed_events(self):
+        self.client.fail['ActiveHosts.get']=KerioError('offline')
+        self.assertIsNotNone(self.engine.handle('Start',event()))
+        count=len(self.client.calls)
+        for _ in range(20): self.engine.handle('Update',event())
+        self.assertEqual(len(self.client.calls),count)
+
+    def test_capacity_is_bounded_and_invalid_events_do_not_create_rows(self):
+        self.store.limit=1; self.engine.handle('Start',event())
+        with self.assertRaises(ValueError): self.engine.handle('Start',event(ip='invalid'))
+        with self.assertRaises(RuntimeError): self.engine.handle('Start',event(ip='192.0.2.20'))
+        self.assertEqual(len(self.store.all()),1)
+
+    def test_timeout_zero_uses_fallback_not_immediate_expiry(self):
+        self.engine.handle('Start',event(timeout=0)); self.clock.advance(5); self.engine.tick()
+        self.assertEqual(self.client.hosts[0]['user']['name'],'alice')
+
+    def test_manual_override_works_through_real_engine_and_can_be_disabled(self):
+        self.client.hosts[0]['authMethod']='AuthMethodAutomatic'
+        self.assertIsNotNone(self.engine.handle('Start',event('bob')))
+        self.assertEqual(self.client.mutations(),[])
+        self.client.cfg['override_manual']=True; self.clock.advance(3)
+        self.assertIsNone(self.engine.handle('Start',event('bob')))
+        self.assertEqual(self.client.hosts[0]['user']['name'],'bob')
+        self.assertEqual(self.client.users[0]['autoLogin']['addresses']['value'],['192.0.2.20'])
