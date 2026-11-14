@@ -1,0 +1,129 @@
+"""Validated target configuration with atomic disk and memory publication."""
+import copy
+import ipaddress
+import json
+import os
+import re
+import threading
+import uuid
+from pathlib import Path
+from .kerio import KerioClient
+
+
+class Registry:
+    def __init__(self, path):
+        self.path = Path(path)
+        self._lock = threading.RLock()
+        self._entries = {}
+        self._clients = {}
+        if self.path.exists():
+            try:
+                rows = json.loads(self.path.read_text(encoding='utf-8'))
+                if not isinstance(rows, list) or len(rows) > 64:
+                    raise ValueError('Configuration must be a list of at most 64 targets')
+                for row in rows:
+                    entry = self._validate(row, {})
+                    if entry['id'] in self._entries:
+                        raise ValueError('Duplicate target ID')
+                    self._entries[entry['id']] = entry
+                self._clients = {i:KerioClient(e) for i,e in self._entries.items()}
+                os.chmod(self.path, 0o600)
+            except (ValueError, TypeError, KeyError) as ex:
+                raise ValueError('Invalid Kerio configuration; restore a valid backup') from ex
+
+    def _validate(self, data, existing):
+        if not isinstance(data, dict):
+            raise ValueError('Target must be an object')
+        values = {**existing, **data}
+        entry = {}
+        for field, default in (('id',uuid.uuid4().hex),('name',''),('host',''),('user',''),
+                               ('prefix',''),('suffix',''),('default_domain',''),('ca_file','')):
+            value = values.get(field, default)
+            if not isinstance(value, str) or len(value) > 512 or any(ord(c) < 32 for c in value):
+                raise ValueError(f'Invalid {field}')
+            entry[field] = value.strip()
+        entry['id'] = entry['id'] or uuid.uuid4().hex
+        if not re.fullmatch('[A-Za-z0-9_-]{1,64}', entry['id']):
+            raise ValueError('Invalid target ID')
+        entry['name'] = entry['name'] or entry['id']
+        host = entry['host'].strip('[]')
+        try:
+            host = str(ipaddress.ip_address(host))
+        except ValueError:
+            if len(host) > 253 or not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?', host):
+                raise ValueError('Host must be a hostname or IP without URL/path/userinfo')
+        entry['host'] = host
+        try:
+            port = values.get('port', 4081)
+            if isinstance(port, bool) or not str(port).isdigit():
+                raise ValueError()
+            entry['port'] = int(port)
+            if not 1 <= entry['port'] <= 65535:
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise ValueError('Invalid port') from None
+        for field, default in (('verify',True),('enabled',True),('override_manual',False)):
+            value = values.get(field, default)
+            if type(value) is not bool:
+                raise ValueError(f'{field} must be boolean')
+            entry[field] = value
+        password = data.get('password') or existing.get('password', '')
+        if not isinstance(password, str) or not password or len(password) > 1024 or not entry['user']:
+            raise ValueError('API user and password are required')
+        entry['password'] = password
+        subnets = values.get('subnets', [])
+        if not isinstance(subnets, list) or len(subnets) > 64 or any(not isinstance(s,str) for s in subnets):
+            raise ValueError('Subnets must be a list of CIDRs')
+        entry['subnets'] = [str(ipaddress.ip_network(s, strict=False)) for s in subnets]
+        return entry
+
+    def _save(self, entries):
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.path.parent, 0o700)
+        temp = self.path.with_name(self.path.name + '.' + uuid.uuid4().hex + '.tmp')
+        try:
+            fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as out:
+                json.dump(list(entries.values()), out, indent=2)
+                out.flush(); os.fsync(out.fileno())
+            os.replace(temp, self.path)
+        finally:
+            if temp.exists():
+                temp.unlink()
+
+    def upsert(self, data):
+        with self._lock:
+            if not isinstance(data, dict):
+                raise ValueError('Target must be an object')
+            existing = self._entries.get(data.get('id'), {})
+            entry = self._validate(data, existing)
+            entries = {**self._entries, entry['id']:entry}
+            if len(entries) > 64:
+                raise ValueError('Too many Kerio targets')
+            client = self._clients.get(entry['id']) if entry == existing else KerioClient(entry)
+            self._save(entries)
+            self._entries = entries
+            self._clients = {**self._clients, entry['id']:client}
+            return entry['id']
+
+    def delete(self, eid):
+        with self._lock:
+            entries = {i:e for i,e in self._entries.items() if i != eid}
+            self._save(entries)
+            self._entries = entries
+            self._clients = {i:c for i,c in self._clients.items() if i != eid}
+
+    def public_list(self):
+        with self._lock:
+            return [{**{k:copy.deepcopy(v) for k,v in e.items() if k != 'password'},
+                     'hasPassword':bool(e['password'])} for e in self._entries.values()]
+
+    def get_client(self, eid):
+        with self._lock:
+            return self._clients.get(eid)
+
+    def candidates(self, ip):
+        addr = ipaddress.ip_address(ip)
+        with self._lock:
+            return [(i,self._clients[i]) for i,e in self._entries.items() if e['enabled'] and
+                    (not e['subnets'] or any(addr in ipaddress.ip_network(s) for s in e['subnets']))]

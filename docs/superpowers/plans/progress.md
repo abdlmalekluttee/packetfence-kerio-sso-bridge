@@ -16,3 +16,4 @@ so same-identity out-of-order sessions remain a documented integration limitatio
 `nTask 1: complete — initial missing-module RED; 7/7 client contract tests GREEN. Runtime uses direct HTTPS without redirect/proxy credential forwarding.
 Task 2: complete — missing prepare_conflict RED; full suite 16/16 GREEN. Exact-IP removal verified, broad rules and disabled policy refuse writes.
 Task 3: complete — missing engine RED; full suite 29/29 GREEN. Durable generation checks, positive cache, retry backoff, expiry and manual-override end-to-end verified.
+Task 4: complete — missing modules/UI RED; full suite 42/42 and Node GUI GREEN. Original TLS hang repro now covered by silent-peer regression. Fixed bounded-body drain after Windows reset exposed by HTTP test.
