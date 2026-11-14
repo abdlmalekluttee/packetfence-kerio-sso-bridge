@@ -45,4 +45,3 @@
 - [x] Verify configured alias destinations exist in Kerio and short realms exist in PacketFence configuration. Use guarded real-client tests that prohibit mutations on already-correct hosts.
 - [ ] Back up the running deployment, install the merged image and explicit aliases without changing targets or active session ownership; preserve durable state.
 - [ ] Retry and monitor affected entries. Correct prerequisites only when evidence identifies the cause and the change preserves unrelated active users. Report unresolved external prerequisites rather than hiding pending failures.
-
