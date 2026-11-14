@@ -28,6 +28,13 @@ response means all operations using the old policy have finished; if the target
 is busy, the save can fail and must be retried. It does not cancel a removal that
 has already reached Kerio.
 
+Kerio's Users.get warning 8003 reports short-name collisions between local and
+domain accounts. The bridge permits this documented read warning while still
+requiring an exact full-domain identity and a unique user in that domain. It
+does not convert, rename, or delete local accounts. Authentication warning 8004,
+unknown warnings, and warnings or item errors on configuration writes remain
+blocking failures. This behavior was checked against Kerio 9.3.4 build 3795.
+
 ## Migration
 
 1. Schedule a maintenance window. Record exact PacketFence/Kerio versions and
