@@ -1,0 +1,10 @@
+.git
+.env
+certs
+data
+tests
+docs
+assets
+__pycache__
+**/__pycache__
+*.pyc

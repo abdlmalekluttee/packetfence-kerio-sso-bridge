@@ -4,15 +4,23 @@ services:
     image: pf-kerio-sso:latest
     container_name: pf-kerio-sso
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
     ports:
-      - "9090:9090"          # PacketFence JSON-RPC  AND  the management GUI
+      - "${BIND_ADDR:-0.0.0.0}:${HOST_PORT:-9090}:${LISTEN_PORT:-9090}"
     env_file: .env
     volumes:
       - ./certs:/certs:ro    # TLS cert/key (CERT_FILE/KEY_FILE in .env)
       - ./data:/data         # persisted list of Kerio firewalls (kerios.json)
     healthcheck:
       test: ["CMD", "python3", "-c",
-             "import socket,os; s=socket.create_connection(('127.0.0.1',int(os.getenv('LISTEN_PORT','9090'))),3); s.close()"]
+             "import http.client,ssl,os; tls=bool(os.getenv('CERT_FILE')); h=os.getenv('LISTEN_ADDR','0.0.0.0'); h='127.0.0.1' if h=='0.0.0.0' else h; c=http.client.HTTPSConnection(h,int(os.getenv('LISTEN_PORT','9090')),timeout=3,context=ssl._create_unverified_context()) if tls else http.client.HTTPConnection(h,int(os.getenv('LISTEN_PORT','9090')),timeout=3); c.request('GET','/healthz'); r=c.getresponse(); assert r.status==200; c.close()"]
       interval: 30s
       timeout: 5s
       retries: 3

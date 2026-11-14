@@ -1,56 +1,48 @@
-<p align="center">
-  <img src="assets/logo.png" alt="PacketFence Kerio SSO Bridge logo" width="260">
-</p>
-
 # PacketFence → Kerio Control SSO Bridge
 
-A small, self-contained service that turns **PacketFence**'s generic `JSONRPC`
-Firewall SSO events into **Kerio Control** `ActiveHosts.login` / `ActiveHosts.logout`
-API calls — giving you **per-username** firewall policy and logging on Kerio
-Control, driven by your PacketFence (802.1X / captive portal) authentication.
+A small Python service translating authenticated PacketFence JSON-RPC SSO events
+into Kerio Control identity mappings. Runs as UID 10001, with no third-party Python
+runtime dependencies.
 
-Kerio Control is **not** a supported PacketFence firewall target. This bridge
-fills that gap using PacketFence's generic JSON-RPC SSO module on one side and
-the Kerio Control Administration API on the other.
+## Smart synchronization
 
-```
-PacketFence  --(JSON-RPC: Start / Update / Stop)-->  this bridge  --(Kerio API)-->  Kerio Control
-   802.1X / captive portal                              :9090                         ActiveHosts.login/logout
-```
+| Observed state | Behavior |
+| --- | --- |
+| Kerio already has the expected user | No logout/login; refresh the durable lease |
+| Repeated event within the verified cache window | No additional Kerio API call |
+| Host is present without a user | Validate and log in the PacketFence user |
+| Different active user | Freshly verify ownership, validate the new user, replace and verify |
+| Conflicting manual automatic-login IP | Refuse by default; optional exact-IP removal |
+| Host missing / API unavailable | Persist failure and retry with backoff |
+| Stop / expiry | Revoke a matching owner unless a compatible active IP alias still needs the host |
+| Different identities on aliases of one host | Refuse rebinding; report the conflicting leases |
 
-## Features
+POST `/` accepts Start and Stop, plus Update as an extension. HTTP Basic uses
+BRIDGE_USER/BRIDGE_PASS. GET `/` is the management GUI using separate admin
+credentials. PacketFence's generic event has no session sequence: see the ordering
+limits in [operations](docs/operations.md).
 
-- **Multiple Kerio firewalls**, managed from a built-in web GUI (add / edit / delete / **test**)
-- Handles PacketFence `Start`, `Update`, and `Stop`
-- Auto-detects which Kerio currently holds a device IP; optional per-Kerio subnet routing
-- Per-Kerio username prefix/suffix for multi-domain `user@domain` setups
-- HTTPS + HTTP Basic auth, runs as a non-root user in a tiny Alpine container
-- Stateless except a small JSON store of your Kerio list
-- No third-party Python dependencies (standard library only)
+## Optional manual-IP override
 
-<p align="center">
-  <img src="assets/GUI.png" alt="PacketFence Kerio SSO Bridge logo" width="1080">
-</p>
+Each firewall has **Allow removal of conflicting manual IP assignments** (off by
+default). When a different PacketFence user needs an IP currently automatically
+assigned to someone else, enabling this permits a minimal Kerio Users.set update
+removing that exact address from the previous user's automatic-login list.
 
-## Requirements
+The bridge preserves other addresses and account settings, verifies the write,
+then verifies the active login. It never deletes users. Shared address groups,
+MAC rules, inherited settings and non-exact address rules require manual resolution.
+Disabling the option prevents future removals; it does not restore earlier ones.
+Saving waits for any in-flight operation on that target. After a successful
+disable response, an older policy cannot perform another removal.
+The Kerio API account needs configuration-write permission for this feature.
 
-- **Kerio must be the L3 gateway** for the user networks — a device must already
-  appear in Kerio → *Status → Active Hosts* for the bind to attach to. If Kerio
-  isn't in the traffic path, there's no host to bind (and no traffic to filter).
-- **RADIUS accounting is required.** PacketFence learns each device's IP from
-  accounting (it's what populates the IP it sends in the SSO event). Your NAS /
-  controller (e.g. UniFi, switches, APs) **must** send RADIUS accounting
-  (Acct-Start / Interim-Update / Acct-Stop, including `Framed-IP-Address`) to
-  PacketFence. Without accounting, PacketFence has no IP to push and nothing
-  binds. Interim-Update accounting is strongly recommended so re-binds keep
-  happening as sessions continue.
-- A Kerio Control **admin** account for the API (default port `4081`).
-- PacketFence with the **JSONRPC** Firewall SSO module.
-- Usernames sent by PacketFence must exist as Kerio users (ideally the same
-  directory both systems authenticate against).
-- Docker + Docker Compose on the host.
+## Install
 
-## Quick start (one command)
+Requirements: Linux host, Docker Engine, Docker Compose v2 supporting `up --wait`,
+Python 3.12+ for the setup helper, OpenSSL, and access to Kerio's administration API.
+Kerio must see each client's IP in Active Hosts and be in the traffic path for
+its policies to apply. Users must exist in the intended Kerio directory.
 
 ```bash
 git clone https://github.com/abdlmalekluttee/packetfence-kerio-sso-bridge.git
@@ -58,91 +50,83 @@ cd packetfence-kerio-sso-bridge
 sudo ./deploy.sh
 ```
 
-`deploy.sh` prompts **only** for the GUI and PacketFence usernames/passwords.
-Everything else is automatic: it writes `.env`, generates a self-signed TLS
-cert (CN = the host's primary IP), fixes permissions for the non-root container
-user, builds the image, and starts the container. When it finishes it prints the
-GUI URL.
+The script preserves an existing .env, prompts for new credentials only on first
+setup, generates a self-signed certificate with an IP SAN if missing, restricts
+permissions, builds locally and waits for HTTP health. For trusted browser TLS,
+install a certificate from your CA. Restrict port 9090 to PacketFence and admins.
+See [migration/rollback](docs/operations.md) before upgrading an existing install.
 
-> Passwords must not contain spaces.
-
-Open `https://<host>:9090/`, log in with the admin credentials you chose, add
-your Kerio firewall(s), and click **Test**.
-
-### Manual start (if you prefer not to use the script)
-
-```bash
-cp .env.example .env          # set BRIDGE_PASS and ADMIN_PASS (no spaces)
-mkdir -p certs data
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout certs/bridge.key -out certs/bridge.crt \
-  -days 825 -subj "/CN=$(hostname -I | awk '{print $1}')"
-chown -R 10001:10001 data certs   # container runs as uid 10001
-docker compose up -d --build
-docker compose logs -f
-```
+Manual configuration: use `python3 configure.py` to generate safely escaped dotenv
+values. Spaces, dollar signs, quotes and backslashes are supported. Do not use
+`source .env`; Compose dotenv syntax is not a shell script. Empty or old placeholder
+passwords are rejected by the application. Never print real `docker compose config`
+output in shared logs because it contains resolved secrets.
 
 ## PacketFence configuration
 
-**1. Enable iplog updates** so PacketFence knows each device's IP to send.
-Configuration → System Configuration → **Advanced**, and turn on:
-- **Update the iplog using the accounting** (required — this is the primary,
-  reliable source of the device IP)
-- **Update the iplog using the authentication**
+1. Select your supported IP discovery path: DHCP visibility/IP helpers, or RADIUS
+   accounting containing Framed-IP-Address. Accounting is not universally required.
+2. Enable the corresponding SSO trigger, separately from the IP-log update setting.
+   For accounting, verify both SSO-on-accounting and acting on accounting Stop.
+3. Add a JSONRPC firewall for the bridge host/port with BRIDGE_USER/BRIDGE_PASS.
+   Select applicable roles and networks; an empty role selection may send nothing.
+4. Preserve the full username realm. Use per-target default_domain only when bare
+   usernames intentionally belong to that domain; do not strip domain distinctions.
+5. Check PacketFence event caching and renewal intervals against registration
+   timeouts and FALLBACK_TTL. Capture a real Start and Stop during acceptance.
 
-**2. Make sure RADIUS accounting reaches PacketFence** from your NAS/controller
-(UniFi, switches, APs), including `Framed-IP-Address`, with Interim-Update
-enabled. This is what fills the IP that gets pushed to the bridge.
+Internal PacketFence Update logging does not guarantee an Update RPC on the wire.
+The reviewed upstream JSONRPC client implements Start/Stop. The bridge accepts both
+Start and Update as equivalent renewals. Configuration/version details and primary
+API references are in [the specification](docs/superpowers/specs/reliable-sso.md).
 
-**3. Add the firewall:** Configuration → Integration → **Firewall SSO** →
-**New Firewall** → **JSONRPC**. Set the host/port to this bridge and the
-Basic-auth credentials to `BRIDGE_USER` / `BRIDGE_PASS`. PacketFence POSTs to
-`/`; the management GUI is also at `/` (GET), so they share the one port.
+## Configuration
 
-> PacketFence sends `Start`, `Update`, and `Stop`. This bridge treats `Update`
-> like `Start`, so periodic accounting updates keep re-binding the user — handy
-> when a host appears in Kerio a little after authentication.
+| Variable | Default / behavior |
+| --- | --- |
+| BRIDGE_USER / BRIDGE_PASS | Required; PacketFence endpoint credentials |
+| ADMIN_USER / ADMIN_PASS | Required; management credentials |
+| LISTEN_ADDR / LISTEN_PORT | 0.0.0.0 / 9090 |
+| BIND_ADDR / HOST_PORT | Compose publication: 0.0.0.0 / 9090 |
+| CERT_FILE / KEY_FILE | Required for direct HTTPS; setup uses /certs/bridge.crt and bridge.key |
+| ALLOW_HTTP | false; explicit private reverse-proxy mode only |
+| PUBLIC_ORIGIN | External https://host[:port] when using a proxy; no trailing slash |
+| CONFIG_PATH | /data/kerios.json, plaintext API credentials; mode 0600 |
+| STATE_PATH | /data/state.sqlite3; durable leases/retries |
+| VERIFIED_TTL | 30 seconds; repeated matching events skip Kerio reads |
+| RECONCILE_INTERVAL | 60 seconds; periodic verification of active mappings |
+| FALLBACK_TTL | 3600 seconds for missing/zero Start timeout |
 
-## Multi-domain (user@domain)
+Positive PacketFence timeouts set lease expiry directly. Failed operations remain
+pending with 2..300-second retry backoff. State capacity is 10000 IPs; completed
+revocations are retained for one hour then pruned. One service instance per state
+directory; do not share the SQLite/JSON files between replicas.
 
-When Kerio is mapped to multiple directories, it identifies users as
-`user@domain`. Make PacketFence send the **full UPN** (don't strip the realm),
-and either leave the per-Kerio prefix/suffix blank (pass-through) or set them per
-firewall.
+Per target: host, port, API credentials, subnets, prefix/suffix, default_domain,
+verify (on for new targets), ca_file (optional private CA inside the container),
+enabled, override_manual (off). Existing explicitly insecure TLS settings are
+preserved on upgrade; move them to verified certificates as part of migration.
 
-## Environment variables
+## Monitoring and tests
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `BRIDGE_USER` / `BRIDGE_PASS` | `packetfence` / `change-me` | Basic auth PacketFence presents to the JSON-RPC endpoint |
-| `ADMIN_USER` / `ADMIN_PASS` | `admin` / `change-me-too` | Basic auth for the management GUI |
-| `LISTEN_ADDR` / `LISTEN_PORT` | `0.0.0.0` / `9090` | Listener |
-| `CERT_FILE` / `KEY_FILE` | `/certs/bridge.crt` `/certs/bridge.key` | TLS cert/key (omit to serve plain HTTP behind a reverse proxy) |
-| `CONFIG_PATH` | `/data/kerios.json` | Where the Kerio list is persisted |
-| `RETRY_TRIES` / `RETRY_DELAY` | `3` / `2` | Retry the Active-Hosts lookup (host may not be present the instant SSO fires) |
+The GUI shows active mappings and pending failures. Test checks session login and
+ActiveHosts read permission; it does not prove every write permission. HTTP
+`/healthz` detects service/worker failure, not every firewall outage. Monitor
+`/api/status` with admin credentials for pending operations and journal logs for
+`sync_pending` and `manual_ip_removed`.
 
-## Security notes
+```bash
+python -m unittest discover -v
+node tests/test_ui.js
+```
 
-- **Kerio admin passwords are stored in plaintext** in `data/kerios.json`.
-  Protect the host, restrict filesystem access, and use a dedicated Kerio admin
-  account scoped as tightly as your environment allows.
-- Always run behind TLS and set strong `BRIDGE_PASS` / `ADMIN_PASS`.
-- Restrict who can reach port `9090` (PacketFence + admins only).
-- The bridge does **not** verify Kerio's TLS certificate by default (Kerio's
-  admin port often uses a self-signed cert). Enable per-Kerio "Verify TLS" if you
-  have a trusted certificate.
-- `.env`, `certs/`, and `data/` are git-ignored — never commit secrets or keys.
-
-## Limitations
-
-- Unofficial. Not affiliated with or endorsed by GFI/Kerio or the PacketFence project.
-- Per-user enforcement only works for traffic that actually passes through Kerio.
-- Tested against the Kerio Control 9.x Administration API.
-
-## Credit
-
-Built by **Luttei** with help from **Claude (Anthropic)**. Use at your own risk.
+Tests mock remote appliances and exercise real synchronization, persistence,
+HTTP/TLS, and GUI logic. CI runs Python 3.12/3.13 and a non-root container smoke test
+before publication. A real PacketFence/Kerio lab acceptance remains necessary;
+no new appliance version compatibility is claimed from mocks alone.
+See [review results](docs/review-results.md) for reproduced findings, fixes and
+the limits of local verification.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. Built by Luttei; unofficial, not affiliated with PacketFence or GFI/Kerio.
