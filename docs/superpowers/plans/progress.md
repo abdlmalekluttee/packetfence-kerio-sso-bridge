@@ -13,3 +13,4 @@ Ruling: exact-IP override off by default; broad shared rules refuse mutation —
 limits automation for MAC/group assignments but prevents unrelated disruption.
 Ruling: no per-event PacketFence polling; generic protocol has no session sequence,
 so same-identity out-of-order sessions remain a documented integration limitation.
+`nTask 1: complete — initial missing-module RED; 7/7 client contract tests GREEN. Runtime uses direct HTTPS without redirect/proxy credential forwarding.
