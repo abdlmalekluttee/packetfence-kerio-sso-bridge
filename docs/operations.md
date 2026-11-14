@@ -74,6 +74,23 @@ new managed event arrives, so a subsequently added domain target can handle it.
 Domains do not make overlapping tenant IP spaces safe: state is still keyed by
 IP. Use separate bridge instances for overlapping tenant networks.
 
+## Reconnect timing
+
+Start and Update are presence hints, not reliable new-session markers. When an
+active lease is pending because its host is missing, either event can shorten
+the old retry timer. A durable five-second per-IP cooldown limits duplicate
+events; a ten-second window permits worker follow-ups if Kerio sees traffic just
+after the event. Without more events the normal exponential backoff resumes.
+The host list remains shared and cached for two seconds per Kerio target, so a
+burst of missing IPs can reuse one snapshot. Pagination and login verification
+can require additional reads when hosts actually need binding.
+
+This does not bypass API outage backoff, manual-rule restrictions, username/MAC
+checks or Stop protections. It does not poll PacketFence for online status.
+PacketFence must deliver an event and Kerio must see the device; no strict
+end-to-end login deadline is guaranteed. A correct Kerio session is preserved,
+including portal logins. Old persisted leases work without a schema migration.
+
 ## Migration
 
 1. Schedule a maintenance window. Record exact PacketFence/Kerio versions and
