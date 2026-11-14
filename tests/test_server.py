@@ -66,6 +66,11 @@ class ServerTests(unittest.TestCase):
         status,_,_=self.request('POST','/api/kerios',{**CONFIG,'host':'different.invalid'},headers=headers)
         self.assertEqual(status,409)
         self.assertEqual(self.registry.get_client('k1').cfg['host'],'kerio.invalid')
+        status,_,_=self.request('POST','/api/kerios',
+            {**CONFIG,'domain_aliases':{'example':'example.test'}},headers=headers)
+        self.assertEqual(status,409)
+        status,_,_=self.request('POST','/api/kerios',{**CONFIG,'domains':['example.test']},headers=headers)
+        self.assertEqual(status,409)
         status,_,_=self.request('POST','/api/kerios',{**CONFIG,'override_manual':True},headers=headers)
         self.assertEqual(status,200)
     def test_default_credentials_and_implicit_plaintext_rejected(self):

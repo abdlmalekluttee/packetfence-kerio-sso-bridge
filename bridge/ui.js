@@ -19,7 +19,7 @@ function button(label,action,kind='secondary') {
 function renderTargets(targets) {
   const rows=targets.map(target=>{
     const row=document.createElement('tr');
-    const values=[target.name,`${target.host}:${target.port}`,target.user,(target.subnets||[]).join(', ')||'Any',
+    const values=[target.name,`${target.host}:${target.port}`,target.user,(target.domains||[]).join(', ')||'Any',(target.subnets||[]).join(', ')||'Any',
       `${target.enabled?'Enabled':'Disabled'} · manual override ${target.override_manual?'on':'off'}${target.verify?'':' · TLS unverified'}`];
     for(const value of values){const cell=document.createElement('td');cell.textContent=value;row.append(cell)}
     const actions=document.createElement('td');
@@ -28,13 +28,14 @@ function renderTargets(targets) {
   });field('targets').replaceChildren(...rows);
 }
 function clearForm(){
-  for(const id of ['id','name','host','user','password','default_domain','prefix','suffix','subnets','ca_file'])field(id).value='';
+  for(const id of ['id','name','host','user','password','default_domain','prefix','suffix','subnets','ca_file','domains','domain_aliases'])field(id).value='';
   field('port').value='4081';field('enabled').checked=true;field('verify').checked=true;field('override_manual').checked=false;
   field('form-title').textContent='Add Kerio firewall';
 }
 function editTarget(target){
   for(const id of ['id','name','host','user','port','default_domain','prefix','suffix','ca_file'])field(id).value=target[id]||'';
   field('password').value='';field('subnets').value=(target.subnets||[]).join(', ');
+  field('domains').value=(target.domains||[]).join(', ');field('domain_aliases').value=JSON.stringify(target.domain_aliases||{});
   for(const id of ['enabled','verify','override_manual'])field(id).checked=Boolean(target[id]);
   field('form-title').textContent='Edit '+target.name;
 }
@@ -43,7 +44,9 @@ async function saveTarget(event){
   const body={};for(const id of ['id','name','host','user','password','port','default_domain','prefix','suffix','ca_file'])body[id]=field(id).value;
   for(const id of ['enabled','verify','override_manual'])body[id]=field(id).checked;
   body.subnets=field('subnets').value.split(',').map(s=>s.trim()).filter(Boolean);
-  try{await api('/api/kerios',{method:'POST',body:JSON.stringify(body)});clearForm();message('Saved');await loadTargets()}
+  body.domains=field('domains').value.split(',').map(s=>s.trim()).filter(Boolean);
+  try{body.domain_aliases=JSON.parse(field('domain_aliases').value||'{}');
+    await api('/api/kerios',{method:'POST',body:JSON.stringify(body)});clearForm();message('Saved');await loadTargets()}
   catch(error){message(error.message,true)}
 }
 async function loadTargets(){renderTargets(await api('/api/kerios'))}

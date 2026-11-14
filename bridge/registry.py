@@ -11,6 +11,16 @@ from pathlib import Path
 from .kerio import KerioClient, KerioError
 
 
+def full_domain(value):
+    if not isinstance(value, str) or len(value) > 253:
+        raise ValueError('Domain must be a full DNS domain')
+    value = value.strip().casefold()
+    labels = value.split('.')
+    if len(labels) < 2 or any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', part) for part in labels):
+        raise ValueError('Domain must be a full DNS domain')
+    return value
+
+
 class Registry:
     def __init__(self, path):
         self.path = Path(path)
@@ -78,6 +88,22 @@ class Registry:
         if not isinstance(subnets, list) or len(subnets) > 64 or any(not isinstance(s,str) for s in subnets):
             raise ValueError('Subnets must be a list of CIDRs')
         entry['subnets'] = [str(ipaddress.ip_network(s, strict=False)) for s in subnets]
+        aliases = values.get('domain_aliases', {})
+        if not isinstance(aliases, dict) or len(aliases) > 64:
+            raise ValueError('Domain aliases must be an object of at most 64 mappings')
+        entry['domain_aliases'] = {}
+        for short, domain in aliases.items():
+            if not isinstance(short, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,62}', short):
+                raise ValueError('Alias must be a short realm name')
+            short = short.casefold()
+            if short == 'local' or short in entry['domain_aliases']:
+                raise ValueError('Duplicate or reserved domain alias')
+            entry['domain_aliases'][short] = full_domain(domain)
+        domains = values.get('domains', [])
+        if not isinstance(domains, list) or len(domains) > 64:
+            raise ValueError('Domains must be a list of at most 64 domain names')
+        entry['domains'] = sorted(set('local' if isinstance(d,str) and d.casefold() == 'local'
+                                      else full_domain(d) for d in domains))
         return entry
 
     def _save(self, entries):
@@ -156,8 +182,14 @@ class Registry:
         with self._lock:
             return self._clients.get(eid)
 
-    def candidates(self, ip):
+    def ignores_user(self, user):
+        with self._lock:
+            # A disabled target still owns its domains: its events stay pending.
+            return bool(self._clients) and not any(c.accepts_user(user) for c in self._clients.values())
+
+    def candidates(self, ip, user=None):
         addr = ipaddress.ip_address(ip)
         with self._lock:
             return [(i,self._clients[i]) for i,e in self._entries.items() if e['enabled'] and
+                    (user is None or self._clients[i].accepts_user(user)) and
                     (not e['subnets'] or any(addr in ipaddress.ip_network(s) for s in e['subnets']))]

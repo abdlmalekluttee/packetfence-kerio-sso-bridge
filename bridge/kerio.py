@@ -20,14 +20,18 @@ class KerioError(RuntimeError):
         self.code = code
 
 
-def normalized_user(name, default_domain=''):
+def normalized_user(name, default_domain='', domain_aliases=None):
     name = name.strip()
     if '\\' in name:
         domain, name = name.split('\\', 1)
         name += '@' + domain
     elif '@' not in name and default_domain:
         name += '@' + default_domain
-    return name.casefold()
+    name = name.casefold()
+    user, separator, domain = name.rpartition('@')
+    if separator and domain_aliases and domain in domain_aliases:
+        return user + '@' + domain_aliases[domain]
+    return name
 
 
 class KerioClient:
@@ -61,14 +65,19 @@ class KerioClient:
 
     def user_name(self, name):
         result = f"{self.cfg.get('prefix', '')}{name}{self.cfg.get('suffix', '')}"
-        return normalized_user(result, self.cfg.get('default_domain', ''))
+        return normalized_user(result, self.cfg.get('default_domain', ''), self.cfg.get('domain_aliases'))
+
+    def accepts_user(self, name):
+        domains = self.cfg.get('domains', [])
+        return not domains or (self.user_name(name).partition('@')[2] or 'local') in domains
 
     def matches(self, host, username):
         ref = host.get('user') or {}
         if ref.get('isGroup') or not ref.get('name'):
             return False
-        actual = normalized_user(ref['name'], ref.get('domainName', ''))
-        expected = normalized_user(username, self.cfg.get('default_domain', ''))
+        aliases = self.cfg.get('domain_aliases')
+        actual = normalized_user(ref['name'], ref.get('domainName', ''), aliases)
+        expected = normalized_user(username, self.cfg.get('default_domain', ''), aliases)
         return actual == expected
 
     @contextmanager
@@ -269,7 +278,7 @@ class KerioClient:
 
     def resolve_user(self, username):
         """Resolve an exact identity; no fuzzy/short-name cross-domain fallback."""
-        expected = normalized_user(username, self.cfg.get('default_domain', ''))
+        expected = normalized_user(username, self.cfg.get('default_domain', ''), self.cfg.get('domain_aliases'))
         name, _, domain = expected.partition('@')
         matches = []
         for did, dname in self._domains():

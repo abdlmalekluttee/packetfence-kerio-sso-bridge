@@ -199,7 +199,7 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(body,dict):
             return self._send({'error':'Object required'},400)
         def guard(current, proposed):
-            identity_fields = ('host','port','subnets','prefix','suffix','default_domain')
+            identity_fields = ('host','port','subnets','prefix','suffix','default_domain','domain_aliases','domains')
             changed = proposed is None or (current and any(proposed[k] != current[k] for k in identity_fields))
             if changed and any(r['target'] == current['id'] and not r['complete']
                                for r in self.server.engine.store.all()):
