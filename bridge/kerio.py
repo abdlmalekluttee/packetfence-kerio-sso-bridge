@@ -211,3 +211,100 @@ class KerioClient:
         with self.transaction():
             self._hosts = None
             return len(self._list('ActiveHosts.get'))
+
+    def _domains(self):
+        result = [('local', '')]
+        for domain in self._list('Domains.get'):
+            did = domain.get('id')
+            if did and did != 'local':
+                name = (domain.get('service') or {}).get('domainName', '')
+                if name:
+                    result.append((did, name.casefold()))
+        return result
+
+    def resolve_user(self, username):
+        """Resolve an exact identity; no fuzzy/short-name cross-domain fallback."""
+        expected = normalized_user(username, self.cfg.get('default_domain', ''))
+        name, _, domain = expected.partition('@')
+        matches = []
+        for did, dname in self._domains():
+            if domain != dname:
+                continue
+            for user in self._list('Users.get', domainId=did):
+                login = (user.get('credentials') or {}).get('userName', '')
+                if normalized_user(login, dname) == expected and user.get('id'):
+                    matches.append((did, user))
+        if len(matches) != 1:
+            raise KerioError('Expected user not uniquely resolved; check username/domain')
+        return matches[0]
+
+    def _owner(self, ref):
+        domain_name = (ref.get('domainName') or '').casefold()
+        if domain_name == 'local':
+            domain_name = ''
+        for did, name in self._domains():
+            if name == domain_name:
+                return did, self._user_by_id(did, ref.get('id'))
+        raise KerioError('Current host user domain cannot be resolved')
+
+    def _user_by_id(self, domain, uid):
+        if not uid:
+            raise KerioError('Current host user has no ID')
+        users = [u for u in self._list('Users.get', domainId=domain) if u.get('id') == uid]
+        if len(users) != 1:
+            raise KerioError('Current host user cannot be uniquely resolved')
+        return users[0]
+
+    def prepare_conflict(self, host, ip, username):
+        """Validate destination, optionally remove only an exact old-owner IP rule.
+
+        This is a configuration operation, not an ActiveHosts logout. Kerio's
+        Users.set has no revision compare-and-swap; a last-moment concurrent
+        administrator edit cannot be fully excluded. Dedicated API account only.
+        """
+        with self.transaction():
+            if self.matches(host, username):
+                return
+            automatic = host.get('authMethod') == 'AuthMethodAutomatic'
+            override = self.cfg.get('override_manual', False)
+            if automatic and not override:
+                raise KerioError('Manual automatic-login conflict; override is disabled')
+            self.resolve_user(username)  # never tear down a valid login for an unknown user
+            ref = host.get('user') or {}
+            if not ref.get('name') or (not automatic and not override):
+                return
+            did, owner = self._owner(ref)
+            auto = owner.get('autoLogin') or {}
+            addresses = auto.get('addresses') or {}
+            values = addresses.get('value')
+            if not isinstance(values, list):
+                raise KerioError('Unsupported automatic-login address schema')
+            exact = []
+            for value in values:
+                try:
+                    if ipaddress.ip_address(value) == ipaddress.ip_address(ip):
+                        exact.append(value)
+                except ValueError:
+                    continue
+            if not addresses.get('enabled') or not exact:
+                if automatic:
+                    raise KerioError('Automatic login uses a rule other than an exact IP; resolve manually')
+                return
+            if not override:
+                raise KerioError('Manual IP conflict; override is disabled')
+            if (owner.get('useTemplate') or (auto.get('macAddresses') or {}).get('enabled')
+                    or (auto.get('addressGroup') or {}).get('enabled')):
+                raise KerioError('Shared MAC/group/template automatic-login rules require manual resolution')
+            latest = self._user_by_id(did, owner['id'])
+            if latest.get('autoLogin') != auto or latest.get('useTemplate') != owner.get('useTemplate'):
+                raise KerioError('Kerio user configuration changed; retry safely')
+            updated = copy.deepcopy(auto)
+            remaining = [value for value in values if value not in exact]
+            updated['addresses'] = {'enabled':bool(remaining), 'value':remaining}
+            self.call('Users.set', {'domainId':did, 'userIds':[owner['id']],
+                                   'details':{'autoLogin':updated}})
+            saved = self._user_by_id(did, owner['id'])
+            if saved.get('autoLogin') != updated:
+                raise KerioError('Manual IP removal verification failed')
+            LOG.warning('manual_ip_removed target=%s user_id=%s ip=%s',
+                        self.cfg.get('id'), owner['id'], ip)
