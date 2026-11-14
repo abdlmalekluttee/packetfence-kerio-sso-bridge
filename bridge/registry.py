@@ -106,6 +106,12 @@ class Registry:
             self._clients = {**self._clients, entry['id']:client}
             return entry['id']
 
+    def proposed(self, data):
+        with self._lock:
+            if not isinstance(data, dict) or not isinstance(data.get('id',''),str):
+                raise ValueError('Invalid target object/ID')
+            return self._validate(data, self._entries.get(data.get('id'),{}))
+
     def delete(self, eid):
         with self._lock:
             entries = {i:e for i,e in self._entries.items() if i != eid}

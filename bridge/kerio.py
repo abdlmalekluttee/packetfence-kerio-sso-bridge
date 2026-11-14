@@ -33,8 +33,11 @@ class KerioClient:
     page_size = 500
     max_items = 50000
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, clock=time.monotonic):
         self.cfg = copy.deepcopy(cfg)
+        self.clock = clock
+        self._unavailable_until = 0.
+        self._failures = 0
         self._lock = threading.RLock()
         self._depth = 0
         self._deadline = 0.
@@ -73,7 +76,7 @@ class KerioClient:
             raise KerioError('Kerio busy; retry pending')
         try:
             if self._depth == 0:
-                self._deadline = time.monotonic() + 20
+                self._deadline = self.clock() + 20
             self._depth += 1
             try:
                 yield self
@@ -83,7 +86,7 @@ class KerioClient:
             self._lock.release()
 
     def _exchange(self, payload, headers):
-        remaining = self._deadline - time.monotonic()
+        remaining = self._deadline - self.clock()
         if remaining <= 0:
             raise KerioError('Kerio operation deadline exceeded')
         conn = http.client.HTTPSConnection(self.cfg['host'].strip('[]'),
@@ -98,10 +101,21 @@ class KerioClient:
                 if name.lower() == 'set-cookie':
                     cookie = SimpleCookie(); cookie.load(value)
                     self._cookies.update({k: v.value for k, v in cookie.items()})
-            body = resp.read(4 * 1024 * 1024 + 1)
-            if len(body) > 4 * 1024 * 1024:
-                raise KerioError('Kerio response exceeds limit')
-            return json.loads(body)
+            chunks = []
+            size = 0
+            while True:
+                remaining = self._deadline - self.clock()
+                if remaining <= 0:
+                    raise KerioError('Kerio response deadline exceeded')
+                if conn.sock:
+                    conn.sock.settimeout(min(5., remaining))
+                chunk = resp.read1(min(65536, 4 * 1024 * 1024 + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk); size += len(chunk)
+                if size > 4 * 1024 * 1024:
+                    raise KerioError('Kerio response exceeds limit')
+            return json.loads(b''.join(chunks))
         except (OSError, http.client.HTTPException, ValueError) as ex:
             # Avoid leaking response bodies, tokens, credentials, or internal URLs.
             raise KerioError(f'Kerio transport failure ({type(ex).__name__})') from ex
@@ -143,15 +157,25 @@ class KerioClient:
 
     def call(self, method, params):
         with self.transaction():
-            if not self._token:
-                self._login()
+            if self.clock() < self._unavailable_until:
+                raise KerioError('Kerio target in failure backoff; retry pending')
             try:
-                return self._raw(method, params)
+                if not self._token:
+                    self._login()
+                try:
+                    result = self._raw(method, params)
+                except KerioError as ex:
+                    if ex.code != -32001:
+                        raise
+                    self._login()
+                    result = self._raw(method, params)
+                self._failures = 0
+                self._unavailable_until = 0
+                return result
             except KerioError as ex:
-                if ex.code != -32001:
-                    raise
-                self._login()
-                return self._raw(method, params)
+                self._failures += 1
+                self._unavailable_until = self.clock() + min(300, 2 ** min(self._failures, 9))
+                raise
 
     def _list(self, method, **params):
         rows = []
@@ -177,9 +201,9 @@ class KerioClient:
     def host_by_ip(self, ip, fresh=False):
         addr = ipaddress.ip_address(ip)
         with self.transaction():
-            if fresh or self._hosts is None or time.monotonic() - self._hosts_at >= 2:
+            if fresh or self._hosts is None or self.clock() - self._hosts_at >= 2:
                 self._hosts = self._list('ActiveHosts.get')
-                self._hosts_at = time.monotonic()
+                self._hosts_at = self.clock()
             found = []
             for host in self._hosts:
                 addresses = [host.get('ip')] + (host.get('ip6Addresses') or [])

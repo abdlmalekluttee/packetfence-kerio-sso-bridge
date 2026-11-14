@@ -1,7 +1,9 @@
 import ssl
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 from bridge.kerio import KerioClient, KerioError
-from tests.helpers import Appliance, CONFIG, host
+from tests.helpers import Appliance, CONFIG, host, Clock
 
 class KerioTests(unittest.TestCase):
     def test_domain_comparison_never_strips_realm(self):
@@ -51,5 +53,23 @@ class KerioTests(unittest.TestCase):
     def test_duplicate_ip_snapshot_is_ambiguous(self):
         c=Appliance(); c.hosts.append(host())
         with self.assertRaises(KerioError): c.host_by_ip('192.0.2.10')
+
+    def test_outage_backoff_is_shared_across_different_ips(self):
+        c=Appliance(); clock=Clock(); c.clock=clock
+        c.fail['ActiveHosts.get']=KerioError('offline')
+        with self.assertRaises(KerioError): c.host_by_ip('192.0.2.10')
+        count=len(c.calls)
+        with self.assertRaises(KerioError): c.host_by_ip('192.0.2.20')
+        self.assertEqual(len(c.calls),count)
+        c.fail.clear();clock.advance(3)
+        self.assertIsNotNone(c.host_by_ip('192.0.2.10'))
+
+    def test_total_response_deadline_limits_trickle_reads(self):
+        c=KerioClient(CONFIG);clock=Clock();c.clock=clock;c._deadline=1020
+        def read(size): clock.advance(25);return b'{}'
+        response=SimpleNamespace(status=200,getheaders=lambda:[],read=read,read1=read)
+        with patch('bridge.kerio.http.client.HTTPSConnection') as connection, patch('bridge.kerio.time.monotonic',side_effect=clock):
+            connection.return_value.getresponse.return_value=response
+            with self.assertRaises(KerioError): c._exchange({'id':1}, {})
 
 if __name__=='__main__': unittest.main()

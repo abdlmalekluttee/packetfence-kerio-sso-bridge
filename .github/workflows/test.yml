@@ -1,0 +1,44 @@
+name: Tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m unittest discover -v
+      - run: node tests/test_ui.js
+      - run: bash -n deploy.sh
+      - run: docker build -t bridge-test .
+      - name: Container starts as non-root and responds to HTTP health
+        shell: bash
+        run: |
+          mkdir -p test-data
+          sudo chown 10001:10001 test-data
+          docker run -d --name bridge-test --read-only --tmpfs /tmp \
+            -v "$PWD/test-data:/data" \
+            -e ADMIN_USER=admin -e ADMIN_PASS=test-admin-password \
+            -e BRIDGE_USER=pf -e BRIDGE_PASS=test-bridge-password \
+            -e ALLOW_HTTP=true bridge-test
+          trap 'docker logs bridge-test; docker rm -f bridge-test' EXIT
+          for n in $(seq 1 20); do
+            if docker exec bridge-test python -c "import os,http.client; assert os.getuid()==10001; c=http.client.HTTPConnection('127.0.0.1',9090,timeout=2); c.request('GET','/healthz'); assert c.getresponse().status==200"; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1

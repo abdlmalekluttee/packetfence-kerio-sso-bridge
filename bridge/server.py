@@ -196,6 +196,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send({'error':'Object required'},400)
         try:
             if self.path == '/api/kerios':
+                proposed = self.server.registry.proposed(body)
+                current = self.server.registry.get_client(proposed['id'])
+                identity_fields = ('host','port','subnets','prefix','suffix','default_domain')
+                if current and any(proposed[k] != current.cfg[k] for k in identity_fields):
+                    if any(r['target']==proposed['id'] and not r['complete'] for r in self.server.engine.store.all()):
+                        return self._send({'error':'Drain target leases before changing host, routing or username settings'},409)
                 return self._send({'id':self.server.registry.upsert(body)})
             if self.path == '/api/kerios/delete':
                 # Retain connection details until every associated lease is revoked.

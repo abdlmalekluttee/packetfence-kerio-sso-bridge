@@ -11,6 +11,7 @@ from bridge.server import create_server, Settings
 from bridge.registry import Registry
 from bridge.state import StateStore
 from bridge.engine import Engine
+from tests.helpers import CONFIG
 
 class ServerTests(unittest.TestCase):
     def setUp(self):
@@ -56,6 +57,17 @@ class ServerTests(unittest.TestCase):
     def test_health_reflects_worker_failure(self):
         self.engine._worker_error='OSError'
         self.assertEqual(self.request('GET','/healthz',auth=None)[0],503)
+
+    def test_target_identity_cannot_change_while_leases_exist(self):
+        self.registry.upsert(CONFIG)
+        self.store.update('192.0.2.10',lambda old:{'ip':'192.0.2.10','target':'k1','complete':False})
+        token=json.loads(self.request('GET','/api/session')[1])['csrf']
+        headers={'X-CSRF-Token':token,'Origin':f'http://127.0.0.1:{self.server.server_port}'}
+        status,_,_=self.request('POST','/api/kerios',{**CONFIG,'host':'different.invalid'},headers=headers)
+        self.assertEqual(status,409)
+        self.assertEqual(self.registry.get_client('k1').cfg['host'],'kerio.invalid')
+        status,_,_=self.request('POST','/api/kerios',{**CONFIG,'override_manual':True},headers=headers)
+        self.assertEqual(status,200)
     def test_default_credentials_and_implicit_plaintext_rejected(self):
         for kwargs in ({'admin_pass':'change-me-too'}, {'bridge_pass':''}, {'allow_http':False}):
             s=Settings(bridge_user='pf',bridge_pass='pf-test-password',admin_user='admin',admin_pass='admin-test-password',allow_http=True)

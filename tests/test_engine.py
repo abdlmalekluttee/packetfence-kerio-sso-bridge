@@ -18,7 +18,7 @@ def event(user='alice', **kw):
 class EngineTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
-        self.clock=Clock(); self.client=Appliance(); self.registry=Registry(self.client)
+        self.clock=Clock(); self.client=Appliance(); self.client.clock=self.clock; self.registry=Registry(self.client)
         self.store=StateStore(str(Path(self.tmp.name)/'state.db'))
         self.addCleanup(self.store.close)
         self.engine=Engine(self.registry,self.store,clock=self.clock)
