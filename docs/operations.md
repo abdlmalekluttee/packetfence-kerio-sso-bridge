@@ -69,6 +69,8 @@ scope explicitly to exclude a domain; a target with an empty list accepts all.
 Domain and alias edits use the active-lease guard. Existing leases stay pinned to
 their target ID and cannot automatically transfer between firewalls. Drain or
 plan a controlled migration before changing an active target's identity policy.
+An excluded lease already completed as ignored releases its old target when a
+new managed event arrives, so a subsequently added domain target can handle it.
 Domains do not make overlapping tenant IP spaces safe: state is still keyed by
 IP. Use separate bridge instances for overlapping tenant networks.
 
