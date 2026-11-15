@@ -1,0 +1,11 @@
+# Confirmed manual-IP overrides and bounded recovery
+
+Observed: an exact-IP override removed a configured address, then Kerio immediately restored the old automatic user and rejected ActiveHosts.login. Later retries saw the address absent in the client view and incorrectly treated this as an unrelated automatic rule. The target eventually recovered after approximately fourteen minutes; its now-correct session must remain unchanged.
+
+Kerio documents Users.set as subject to cut-off prevention: getConfigTimestamp reloads configuration, and nonempty timestamps require confirmConfig. The bridge omitted this protocol. Add strict confirmation, verify through a new administrative session, and persist narrowly scoped recovery evidence before the configuration write. Do not claim this omission proves every appliance-side timing symptom.
+
+Recovery evidence binds the target configuration, lease generation, IP, device/user, host ID, old owner ID/domain, and before/after autoLogin hashes. Only override-enabled exact-IP removals create it. Preserve all unrelated addresses, MAC/group rules, rights and templates. A changed owner/host/policy, stale or unknown PacketFence authority, Stop, newer identity or disabled override must prevent recovery mutations.
+
+Defer host mutation for five seconds after confirmation; worker scheduling must not sleep while holding locks. Record configuration writes and binding attempts durably, permit at most two of each per lease, separate recovery bind attempts by at least 60 seconds, and expire recovery permission after 15 minutes. No automatic exception for a missing exact rule without matching evidence. A fresh host read after logout must be anonymous or already correct before login. Never loop logout/login against an automatically restored owner.
+
+Correct portal/API sessions remain no-ops. Validate with real engine/client logic at mocked network boundaries, CI, independent review and isolated live reads. Deploy preserving state and observer configuration, and compare active sessions. Do not manufacture a production conflict by logging out the recovered target or re-adding its old rule.

@@ -52,6 +52,8 @@ class Appliance(KerioClient):
                 if u['id'] in p['userIds']: u['autoLogin']=copy.deepcopy(p['details']['autoLogin'])
             result={'errors':[]}
         elif method=='Session.logout': result={}
+        elif method=='Session.getConfigTimestamp': result={'clientTimestampList':[]}
+        elif method=='Session.confirmConfig': result={'confirmed':True}
         else: raise AssertionError('unexpected RPC '+method)
         return {'jsonrpc':'2.0','id':payload['id'],'result':result}
 

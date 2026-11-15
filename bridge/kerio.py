@@ -1,5 +1,6 @@
 """Small, validated subset of the Kerio Control Administration JSON-RPC API."""
 import copy
+import hashlib
 import http.client
 import ipaddress
 import json
@@ -12,6 +13,11 @@ from contextlib import contextmanager
 from http.cookies import SimpleCookie
 
 LOG = logging.getLogger(__name__)
+
+
+def policy_digest(owner):
+    return hashlib.sha256(json.dumps({'autoLogin':owner.get('autoLogin'),
+        'useTemplate':owner.get('useTemplate')},sort_keys=True).encode()).hexdigest()
 
 
 class KerioError(RuntimeError):
@@ -319,7 +325,23 @@ class KerioClient:
             raise KerioError('Current host user cannot be uniquely resolved')
         return users[0]
 
-    def prepare_conflict(self, host, ip, username):
+    def _config_timestamps(self):
+        values = self.call('Session.getConfigTimestamp', {}).get('clientTimestampList')
+        if (not isinstance(values,list) or len(values)>16 or any(
+                not isinstance(v,dict) or not isinstance(v.get('name'),str) or not v['name']
+                or type(v.get('timestamp')) is not int or v['timestamp']<0 for v in values)):
+            raise KerioError('Invalid Kerio configuration confirmation response')
+        return values
+
+    def renew_session(self):
+        """Refresh only this administrative API session, never an active host."""
+        try:
+            if self._token:
+                self.call('Session.logout', {})
+        finally:
+            self._token=None;self._cookies.clear();self._hosts=None
+
+    def prepare_conflict(self, host, ip, username, recovery=None, checkpoint=None):
         """Validate destination, optionally remove only an exact old-owner IP rule.
 
         This is a configuration operation, not an ActiveHosts logout. Kerio's
@@ -333,11 +355,32 @@ class KerioClient:
             override = self.cfg.get('override_manual', False)
             if automatic and not override:
                 raise KerioError('Manual automatic-login conflict; override is disabled')
+            if recovery and not override:
+                raise KerioError('Manual override recovery is disabled')
             self.resolve_user(username)  # never tear down a valid login for an unknown user
             ref = host.get('user') or {}
-            if not ref.get('name') or (not automatic and not override):
+            if not recovery and (not ref.get('name') or (not automatic and not override)):
                 return
-            did, owner = self._owner(ref)
+            if override:
+                if recovery:
+                    self.renew_session()
+                if self._config_timestamps():
+                    raise KerioError('Kerio configuration confirmation already pending; retry safely')
+            if recovery and not ref.get('name'):
+                did = recovery['domain_id']
+                owner = self._user_by_id(did, recovery['owner_id'])
+            else:
+                did, owner = self._owner(ref)
+            if recovery:
+                if (recovery.get('host_id')!=host.get('id') or recovery.get('owner_id')!=owner['id']
+                        or recovery.get('domain_id')!=did or recovery.get('ip')!=ip
+                        or recovery.get('user')!=username
+                        or policy_digest(owner) not in (recovery.get('before'),recovery.get('after'))):
+                    raise KerioError('Manual override recovery context changed; refusing mutation')
+                if policy_digest(owner)==recovery['after']:
+                    return recovery
+                if not ref.get('name'):
+                    raise KerioError('Anonymous recovery host has rolled-back policy; retry safely')
             auto = owner.get('autoLogin') or {}
             addresses = auto.get('addresses') or {}
             values = addresses.get('value')
@@ -367,10 +410,25 @@ class KerioClient:
             updated = copy.deepcopy(auto)
             remaining = [value for value in values if value not in exact]
             updated['addresses'] = {'enabled':bool(remaining), 'value':remaining}
+            proof = {'host_id':host['id'],'owner_id':owner['id'],'domain_id':did,
+                     'ip':ip,'user':username,'before':policy_digest(owner),
+                     'after':policy_digest({**owner,'autoLogin':updated}),'phase':'prepared'}
+            if checkpoint and not checkpoint(proof):
+                raise KerioError('Override superseded before configuration write')
             self.call('Users.set', {'domainId':did, 'userIds':[owner['id']],
                                    'details':{'autoLogin':updated}})
+            timestamps=self._config_timestamps()
+            if timestamps:
+                confirmed=self.call('Session.confirmConfig', {'clientTimestampList':timestamps})
+                if confirmed.get('confirmed') is not True:
+                    raise KerioError('Kerio configuration was not confirmed; retry safely')
+            self.renew_session()
             saved = self._user_by_id(did, owner['id'])
-            if saved.get('autoLogin') != updated:
+            if policy_digest(saved) != proof['after']:
                 raise KerioError('Manual IP removal verification failed')
+            proof['phase']='verified'
+            if checkpoint and not checkpoint(proof):
+                raise KerioError('Override superseded after configuration write')
             LOG.warning('manual_ip_removed target=%s user_id=%s ip=%s',
                         self.cfg.get('id'), owner['id'], ip)
+            return proof
