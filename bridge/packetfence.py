@@ -186,6 +186,7 @@ class PacketFence:
             return 'unknown'
         try:
             start=datetime.strptime(binding['start_time'],'%Y-%m-%d %H:%M:%S').replace(tzinfo=self.timezone).timestamp()
+            if start>snapshot['at']:return 'unknown'
             end=binding['end_time']
             if not isinstance(end,str):return 'unknown'
             if end != '0000-00-00 00:00:00':

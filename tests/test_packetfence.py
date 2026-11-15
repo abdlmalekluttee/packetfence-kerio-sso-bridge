@@ -132,6 +132,10 @@ class PacketFenceTests(unittest.TestCase):
         self.assertEqual(len(self.pf.calls),count)
         self.assertTrue(self.pf.error)
 
+    def test_future_binding_does_not_establish_current_ownership(self):
+        self.pf.bindings[0]['start_time']='2100-01-01 00:00:00'
+        self.assertEqual(self.pf.check(ROW,canonical),'unknown')
+
     def test_blocked_connection_is_bounded_without_spawning_retries(self):
         started=threading.Event();release=threading.Event();finished=threading.Event()
         connections=[];requests=[];errors=[]
