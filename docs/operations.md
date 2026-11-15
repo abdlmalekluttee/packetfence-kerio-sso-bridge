@@ -211,3 +211,30 @@ production rollout, and pin approved image digests in deployment infrastructure.
 The repository CI tests code but does not establish that a particular built image
 has no vulnerabilities. Test credentials and PEM keys under tests/fixtures are
 public loopback fixtures and are excluded from Docker build context.
+# Optional PacketFence authority monitor
+
+Set `PACKETFENCE_CONFIG=/data/packetfence.json` to enable independent, read-only checks of tracked IPv4 ownership. Without it the bridge keeps its existing event/expiry behavior. Protect this file with mode `0600`, owned by the container UID (10001):
+
+```json
+{
+  "host": "pf.example.test",
+  "port": 9999,
+  "username": "bridge-sso-observer",
+  "password": "REPLACE_WITH_RANDOM_SERVICE_PASSWORD",
+  "timezone": "Africa/Tripoli",
+  "ca_file": "/certs/packetfence-ca.crt"
+}
+```
+
+Use a dedicated local PacketFence account assigned an admin role containing **only `NODES_READ`**. The observer calls `POST /api/v1/login`, `POST /api/v1/ip4logs/search`, and `POST /api/v1/nodes/search`. Search POSTs are reads in PacketFence's authorization model. It never changes nodes, registrations, IP records, switch configuration or authentication sources. Set the timezone to PacketFence's timezone because IP log dates have no UTC offset. Docker includes timezone data; other installations need system timezone data (or Python's `tzdata` package).
+
+TLS certificate/hostname validation is on by default; `ca_file` is optional for a public CA. For a legacy certificate, `certificate_sha256` can instead pin the SHA-256 of its DER certificate. Obtain the fingerprint through trusted console/SSH access. The pin is checked **before credentials are sent**. A changed certificate blocks source checks until an operator verifies and updates the pin.
+
+The observer batches up to 100 tracked IPs per refresh and caches each successful observation for 60 seconds. With fewer than 100 stable mappings this normally needs two search requests per minute, plus authentication when required. New uncached mappings can require a pair of immediate read requests. Larger sets are processed in bounded batches. Outages use 30–300 second backoff; missing, duplicate, malformed or truncated results are treated as unknown, never as evidence that a user left.
+
+An obsolete binding is held: **no login, logout, or manual-IP edits**. Any visible Kerio host is preserved, even when idle. After two obsolete observations at least 60 seconds apart, a fresh Kerio read that finds no host allows automatic retirement of that old bridge mapping. A new PacketFence event resets confirmation. This prevents obsolete desired state from recreating a login later. A currently correct session remains untouched. Normal guarded Stop/expiry processing continues only when source ownership is confirmed.
+
+The dashboard separates `waiting` (host absent), `held` (source obsolete/unknown), and `failed` (other reconciliation errors); `pending` remains their total for API compatibility. Waiting is not proof the device is offline: the device may not yet have sent traffic through this Kerio. Held mappings with visible hosts need monitoring, not forced logout. Source API errors appear separately. IPv6 source verification is not implemented: when this observer is enabled, IPv6 mappings are held as unverified. Link-local, loopback, multicast and unspecified event addresses are ignored without contacting Kerio.
+
+PacketFence references: [API specification](https://packetfence.org/doc/api/) and [source controller](https://github.com/inverse-inc/packetfence/blob/stable/lib/pf/UnifiedApi/Controller/Ip4logs.pm). API shapes and NODES_READ permissions were also checked against the installed PacketFence 15.0 source. Observer provisioning is optional; it does not require enabling PacketFence's remote connector or accounting-stop events.
+

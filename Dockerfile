@@ -1,7 +1,7 @@
 FROM python:3.12-alpine
 
 # non-root runtime user
-RUN adduser -D -u 10001 bridge
+RUN apk add --no-cache tzdata && adduser -D -u 10001 bridge
 
 WORKDIR /app
 COPY pf_kerio_sso_bridge.py /app/

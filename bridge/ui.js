@@ -62,7 +62,7 @@ async function deleteTarget(target){
 async function refreshStatus(){
   try{
     const status=await api('/api/status');
-    field('status').textContent=`${status.active} active mappings · ${status.pending} pending failures${status.worker_error?' · worker needs attention':''}`;
+    field('status').textContent=`${status.active} tracked mappings · ${status.waiting||0} waiting for device traffic · ${status.held||0} held for PacketFence checks · ${status.failed===undefined?status.pending:status.failed} failures${status.worker_error?' · worker needs attention':''}${status.source_error?' · PacketFence API needs attention':''}`;
     const rows=status.leases.filter(lease=>lease.error).map(lease=>{
       const row=document.createElement('p');row.className='pending';row.textContent=`${lease.ip} · ${lease.user}: ${lease.error}`;return row;
     });field('pending').replaceChildren(...rows);
