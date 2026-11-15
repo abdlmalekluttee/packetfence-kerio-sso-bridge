@@ -198,12 +198,23 @@ validate persistence/readback on your specific appliance before enabling it.
 ## Manual-IP override recovery
 
 Kerio lists `Users.set` among operations covered by [cut-off prevention](https://manuals.gfi.com/en/kerio/api/control/reference/cutoff_prevention.html).
-The bridge checks that no configuration confirmation is already pending, removes
-only the conflicting exact IP, obtains `Session.getConfigTimestamp`, and confirms
+The bridge removes only the conflicting exact IP, obtains
+`Session.getConfigTimestamp`, and confirms
 nonempty timestamps using `Session.confirmConfig`. Empty timestamps mean cut-off
 prevention is inactive. It then renews its administrative API session and reads
 the owner policy again; this session renewal does not log out network users.
 See the [Session API](https://manuals.gfi.com/en/kerio/api/control/reference/interfacewebadmin_1_1_session.html).
+
+Kerio 9.3.4 can return nonempty revision lists even to a fresh read-only session;
+their presence alone does not identify an outstanding change. Before writing,
+the bridge requires nonempty revisions to remain stable for at least 35 seconds,
+longer than the documented 30-second rollback window. It observes again before
+writing; changed revisions restart the wait. Worker scheduling handles this wait
+without sleeping under locks. Empty revision lists need no stability wait.
+It never confirms configuration merely because a read returned timestamps.
+This guard reduces interference with other configuration work; it is not proof
+of exclusive ownership. A new observation is required after every write attempt,
+including ambiguous failures, before unconfirmed recovery can bind a host.
 
 Before writing, the bridge journals the host ID, old owner, desired identity,
 target configuration fingerprint and before/after policy hashes in the existing

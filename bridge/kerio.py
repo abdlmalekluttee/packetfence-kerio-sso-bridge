@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from http.cookies import SimpleCookie
 
 LOG = logging.getLogger(__name__)
+CONFIG_STABILITY_SECONDS = 35  # exceeds Kerio's documented 30-second rollback window
 
 
 def policy_digest(owner):
@@ -61,6 +62,7 @@ class KerioClient:
             self._ctx.verify_mode = ssl.CERT_NONE
         self._hosts = None
         self._hosts_at = 0.
+        self._config_stability = None
 
     @property
     def url(self):
@@ -331,7 +333,23 @@ class KerioClient:
                 not isinstance(v,dict) or not isinstance(v.get('name'),str) or not v['name']
                 or type(v.get('timestamp')) is not int or v['timestamp']<0 for v in values)):
             raise KerioError('Invalid Kerio configuration confirmation response')
+        if len({v['name'] for v in values}) != len(values):
+            raise KerioError('Duplicate Kerio configuration timestamps')
         return values
+
+    def _require_stable_config(self, timestamps):
+        # Some appliances return revisions even when nothing awaits confirmation.
+        # Never confirm those merely to clear them; observe a stable revision for
+        # longer than the rollback window before starting our own write/recovery.
+        if not timestamps:
+            self._config_stability = None
+            return
+        revision = tuple(sorted((v['name'],v['timestamp']) for v in timestamps))
+        now = self.clock()
+        if not self._config_stability or self._config_stability[0] != revision:
+            self._config_stability = (revision,now)
+        if now-self._config_stability[1] < CONFIG_STABILITY_SECONDS:
+            raise KerioError('Kerio configuration stability check pending; retry safely')
 
     def renew_session(self):
         """Refresh only this administrative API session, never an active host."""
@@ -364,8 +382,7 @@ class KerioClient:
             if override:
                 if recovery:
                     self.renew_session()
-                if self._config_timestamps():
-                    raise KerioError('Kerio configuration confirmation already pending; retry safely')
+                timestamps = self._config_timestamps()
             if recovery and not ref.get('name'):
                 did = recovery['domain_id']
                 owner = self._user_by_id(did, recovery['owner_id'])
@@ -378,6 +395,8 @@ class KerioClient:
                         or policy_digest(owner) not in (recovery.get('before'),recovery.get('after'))):
                     raise KerioError('Manual override recovery context changed; refusing mutation')
                 if policy_digest(owner)==recovery['after']:
+                    if recovery.get('phase') != 'verified':
+                        self._require_stable_config(timestamps)
                     return recovery
                 if not ref.get('name'):
                     raise KerioError('Anonymous recovery host has rolled-back policy; retry safely')
@@ -407,6 +426,7 @@ class KerioClient:
             latest = self._user_by_id(did, owner['id'])
             if latest.get('autoLogin') != auto or latest.get('useTemplate') != owner.get('useTemplate'):
                 raise KerioError('Kerio user configuration changed; retry safely')
+            self._require_stable_config(self._config_timestamps())
             updated = copy.deepcopy(auto)
             remaining = [value for value in values if value not in exact]
             updated['addresses'] = {'enabled':bool(remaining), 'value':remaining}
@@ -415,6 +435,7 @@ class KerioClient:
                      'after':policy_digest({**owner,'autoLogin':updated}),'phase':'prepared'}
             if checkpoint and not checkpoint(proof):
                 raise KerioError('Override superseded before configuration write')
+            self._config_stability = None
             self.call('Users.set', {'domainId':did, 'userIds':[owner['id']],
                                    'details':{'autoLogin':updated}})
             timestamps=self._config_timestamps()
