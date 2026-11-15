@@ -15,6 +15,7 @@ from pathlib import Path
 from .engine import Engine
 from .registry import Registry
 from .state import StateStore
+from .packetfence import PacketFence
 
 LOG = logging.getLogger(__name__)
 
@@ -259,7 +260,9 @@ def main():
         if not 1 <= value <= 315360000:
             raise ValueError(f'Invalid {name}')
         return value
-    engine = Engine(registry,store,verified_ttl=positive_env('VERIFIED_TTL',30),
+    source_path = os.getenv('PACKETFENCE_CONFIG','')
+    source = PacketFence(json.loads(Path(source_path).read_text(encoding='utf-8'))) if source_path else None
+    engine = Engine(registry,store,source=source,verified_ttl=positive_env('VERIFIED_TTL',30),
                     reconcile_interval=positive_env('RECONCILE_INTERVAL',60),fallback_ttl=positive_env('FALLBACK_TTL',3600))
     server = create_server((os.getenv('LISTEN_ADDR','0.0.0.0'),int(os.getenv('LISTEN_PORT','9090'))),registry,engine,settings)
     def shutdown(*args):

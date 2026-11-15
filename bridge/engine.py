@@ -13,6 +13,15 @@ HOST_MISSING = 'Host not yet present in Kerio; retry pending'
 MISSING_HOST_ERRORS = (HOST_MISSING, 'No active host on configured targets')
 PRESENCE_COOLDOWN = 5
 PRESENCE_WINDOW = 10
+SOURCE_STALE = 'PacketFence binding obsolete; preserving any existing Kerio session'
+SOURCE_UNKNOWN = 'PacketFence ownership unverified; preserving existing Kerio sessions'
+
+
+def usable_ip(value):
+    address = ipaddress.ip_address(value)
+    address = getattr(address, 'ipv4_mapped', None) or address
+    return not (address.is_link_local or address.is_loopback or address.is_unspecified
+                or address.is_multicast or str(address) == '255.255.255.255')
 
 
 def mac_key(value):
@@ -26,7 +35,7 @@ def fingerprint(client):
 
 class Engine:
     def __init__(self, registry, store, clock=time.time, verified_ttl=30, reconcile_interval=60,
-                 fallback_ttl=3600):
+                 fallback_ttl=3600, source=None):
         self.registry, self.store, self.clock = registry, store, clock
         self.verified_ttl = verified_ttl
         self.reconcile_interval = reconcile_interval
@@ -36,6 +45,7 @@ class Engine:
         self._worker = None
         self._worker_error = None
         self._presence_scans = {}
+        self.source = source
 
     def _validate(self, method, p):
         if method not in ('Start', 'Update', 'Stop'):
@@ -63,6 +73,10 @@ class Engine:
         # Resolve formatting before entering the state transaction: registry edits
         # use registry -> state lock order, never the reverse.
         prior = self.store.get(ip)
+        if not usable_ip(ip):
+            if prior:
+                self._ignore(prior)
+            return None
         if self.registry.ignores_user(user):
             if prior and self.registry.ignores_user(prior['user']):
                 self._ignore(prior)
@@ -86,7 +100,7 @@ class Engine:
                 return None
             if same and old['desired'] == desired and not old.get('complete'):
                 renewed = {**old, 'expires':now + ttl if desired == 'active' else old['expires'],
-                           'updated':now, 'mac':mac or old['mac']}
+                           'updated':now, 'mac':mac or old['mac'], 'source_stale_since':None}
                 if desired == 'active':
                     renewed['presence_until'] = now + PRESENCE_WINDOW
                     if old.get('error') in MISSING_HOST_ERRORS:
@@ -154,7 +168,7 @@ class Engine:
             row = self.store.get(ip)
             if not row or row.get('complete'):
                 return None
-            if self.registry.ignores_user(row['user']):
+            if not usable_ip(ip) or self.registry.ignores_user(row['user']):
                 self._ignore(row)
                 return None
             if row['desired'] == 'active' and row['expires'] <= self.clock():
@@ -176,6 +190,10 @@ class Engine:
                     if (not force and row['desired'] == 'active' and row['verified']
                             and self.clock() - row['verified'] < self.verified_ttl and row['config'] == cfg):
                         return None
+                    if self.source:
+                        source_error = self._check_source(row, client)
+                        if source_error:
+                            return source_error
                     host = client.host_by_ip(ip, fresh=row['desired'] == 'stop')
                     if not self._current(row):
                         return 'Superseded; latest event pending'
@@ -248,6 +266,37 @@ class Engine:
         finally:
             lock.release()
 
+    def _check_source(self, row, client):
+        authority, observed = self.source.assess(row, client.user_name)
+        if authority == 'current':
+            self._patch(row, source_stale_since=None)
+            return None
+        error = SOURCE_STALE if authority == 'stale' else SOURCE_UNKNOWN
+        since = row.get('source_stale_since')
+        retire = False
+        if authority == 'stale':
+            since = max(since if since is not None else observed, row['updated'])
+            if observed - since >= 60:
+                # Do not logout even idle hosts: routed MACs and PF history can disagree.
+                retire = client.host_by_ip(row['ip'], fresh=True) is None
+        else:
+            since = None
+        def update(latest):
+            if (not latest or latest['generation'] != row['generation']
+                    or latest['updated'] != row['updated']):
+                return None
+            if retire:
+                return {**latest, 'desired':'ignored', 'complete':True, 'error':None,
+                        'generation':latest['generation']+1, 'updated':self.clock(),
+                        'next_try':0, 'attempts':0, 'retired_reason':'obsolete_packetfence_binding'}
+            return {**latest, 'error':error, 'next_try':self.clock()+60,
+                    'attempts':0, 'source_stale_since':since, 'source_seen':observed}
+        result = self.store.update(row['ip'], update)
+        if retire and result.get('complete'):
+            LOG.info('retired_obsolete_binding ip=%s', row['ip'])
+            return 'Obsolete PacketFence binding retired'
+        return error
+
     def _siblings(self, row, eid, host):
         """Kerio login/logout affect every IP alias of the resolved host."""
         siblings = []
@@ -311,6 +360,12 @@ class Engine:
 
     def tick(self):
         now = self.clock()
+        if self.source:
+            self.source.refresh([r for r in self.store.all() if not r.get('complete') and usable_ip(r['ip'])])
+            for row in self.store.all():
+                if (not row.get('complete') and row.get('error') in (SOURCE_STALE,SOURCE_UNKNOWN)
+                        and self.source.observed(row['ip']) > row.get('source_seen',0)):
+                    self._patch(row,next_try=0)
         self._discover_hosts(now)
         for row in self.store.all():
             if self._stop.is_set():
@@ -323,8 +378,12 @@ class Engine:
 
     def status(self):
         rows = self.store.all()
+        pending = [r for r in rows if r['error'] and not r['complete']]
+        waiting = sum(r['error'] in MISSING_HOST_ERRORS for r in pending)
+        held = sum(r['error'] in (SOURCE_STALE, SOURCE_UNKNOWN) for r in pending)
         return {'active':sum(r['desired']=='active' and not r['complete'] for r in rows),
-                'pending':sum(bool(r['error']) and not r['complete'] for r in rows),
+                'pending':len(pending), 'waiting':waiting, 'held':held, 'failed':len(pending)-waiting-held,
+                'source_error':self.source.error if self.source else None,
                 'worker_error':self._worker_error,
                 'leases':[{'ip':r['ip'],'user':r['user'],'target':r['target'],'desired':r['desired'],
                            'expires':r['expires'],'error':r['error']} for r in rows if not r['complete']][:200]}
