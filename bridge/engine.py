@@ -35,6 +35,7 @@ class Engine:
         self._stop = threading.Event()
         self._worker = None
         self._worker_error = None
+        self._presence_scans = {}
 
     def _validate(self, method, p):
         if method not in ('Start', 'Update', 'Stop'):
@@ -271,8 +272,46 @@ class Engine:
         return not (re.fullmatch('[0-9a-f]{12}', wanted or '') and
                     re.fullmatch('[0-9a-f]{12}', actual or '') and wanted != actual)
 
+    def _discover_hosts(self, now):
+        groups = {}
+        for row in self.store.all():
+            if (row.get('complete') or row['desired'] != 'active' or row['expires'] <= now
+                    or row.get('error') not in MISSING_HOST_ERRORS):
+                continue
+            target = row.get('target')
+            candidates = ([(target, self.registry.get_client(target))] if target is not None
+                          else self.registry.candidates(row['ip'], row['user']))
+            for eid, client in candidates:
+                if client and client.cfg.get('enabled', True) and client.accepts_user(row['user']):
+                    groups.setdefault(eid, (client, []))[1].append(row)
+        self._presence_scans = {eid:due for eid,due in self._presence_scans.items() if eid in groups}
+        for eid, (client, rows) in groups.items():
+            if self._stop.is_set():
+                break
+            if self._presence_scans.get(eid, 0) > self.clock():
+                continue
+            self._presence_scans[eid] = self.clock() + PRESENCE_COOLDOWN
+            try:
+                with self.registry.operation(eid, expected=client), client.transaction():
+                    present = client.present_ips([row['ip'] for row in rows])
+            except KerioError:
+                # Client-wide outage backoff still gates all network calls.
+                continue
+            for row in rows:
+                if row['ip'] not in present:
+                    continue
+                def wake(latest):
+                    if (latest and latest['generation'] == row['generation']
+                            and not latest.get('complete') and latest['desired'] == 'active'
+                            and latest['expires'] > self.clock()
+                            and latest.get('error') in MISSING_HOST_ERRORS):
+                        return {**latest, 'next_try':0}
+                    return None
+                self.store.update(row['ip'], wake)
+
     def tick(self):
         now = self.clock()
+        self._discover_hosts(now)
         for row in self.store.all():
             if self._stop.is_set():
                 break

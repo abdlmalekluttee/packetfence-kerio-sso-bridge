@@ -125,15 +125,13 @@ class ReconnectTests(unittest.TestCase):
         self.engine.tick()
         self.assertEqual(self.client.hosts[0]['user']['name'], 'alice')
 
-    def test_no_event_does_not_accelerate_background_backoff(self):
+    def test_host_arriving_without_another_event_is_discovered_before_backoff(self):
         self.long_missing_retry()
         self.client.hosts = [host(user='')]
-        self.clock.advance(299)
-        self.engine.tick()
-        self.assertEqual(self.client.calls, [])
-        self.clock.advance(1)
+        self.clock.advance(5)
         self.engine.tick()
         self.assertEqual(self.client.hosts[0]['user']['name'], 'alice')
+        self.assertIsNone(self.store.get(self.params['ip'])['error'])
 
     def test_api_failure_events_keep_backoff(self):
         self.client.fail['ActiveHosts.get'] = KerioError('offline')
@@ -169,7 +167,74 @@ class ReconnectTests(unittest.TestCase):
         self.assertEqual(self.reads(), 3)
         self.clock.advance(299)
         self.engine.tick()
-        self.assertEqual(self.reads(), 3)
+        # One shared discovery read is allowed, but no per-IP retry or write.
+        self.assertEqual(self.reads(), 4)
+        self.assertEqual(self.client.mutations(), [])
+
+    def test_background_discovery_of_100_missing_hosts_uses_one_snapshot_per_pass(self):
+        self.long_missing_retry()
+        template = self.store.get(self.params['ip'])
+        for n in range(11, 110):
+            ip = '192.0.2.' + str(n)
+            self.store.update(ip, lambda old, ip=ip: {**template, 'ip':ip})
+        self.clock.advance(5)
+        before = {r['ip']:r['next_try'] for r in self.store.all()}
+        for _ in range(100):
+            self.engine.tick()
+        self.assertEqual(self.reads(), 1)
+        self.assertEqual({r['ip']:r['next_try'] for r in self.store.all()}, before)
+        self.clock.advance(5)
+        self.engine.tick()
+        self.assertEqual(self.reads(), 2)
+        self.assertEqual(self.client.mutations(), [])
+
+    def test_background_discovery_does_not_scan_healthy_only_target(self):
+        self.engine.handle('Start', self.params)
+        self.client.calls.clear()
+        for _ in range(10):
+            self.clock.advance(5)
+            self.engine.tick()
+        self.assertEqual(self.client.calls, [])
+
+    def test_discovery_does_not_wake_a_stop_superseding_its_snapshot(self):
+        self.long_missing_retry()
+        self.clock.advance(5)
+        self.client.hosts = [host(user='')]
+        original = self.client._exchange
+        changed = []
+        def exchange(payload, headers):
+            if payload['method'] == 'ActiveHosts.get' and not changed:
+                changed.append(True)
+                self.store.update(self.params['ip'], lambda old: {
+                    **old, 'generation':old['generation']+1, 'desired':'stop',
+                    'next_try':self.clock()+300, 'error':'logout retry'})
+            return original(payload, headers)
+        self.client._exchange = exchange
+        self.engine.tick()
+        self.assertTrue(changed)
+        row = self.store.get(self.params['ip'])
+        self.assertEqual(row['desired'], 'stop')
+        self.assertEqual(row['next_try'], self.clock()+300)
+        self.assertEqual(self.client.mutations(), [])
+
+    def test_multi_target_discovery_without_new_event_preserves_ambiguity_guard(self):
+        second = Appliance();second.clock = self.clock;second.hosts = []
+        self.registry.clients['second'] = second
+        self.long_missing_retry()
+        self.client.hosts = [host(user='')];second.hosts = [host(user='')]
+        self.clock.advance(5)
+        self.engine.tick()
+        self.assertIn('Ambiguous', self.store.get(self.params['ip'])['error'])
+        self.assertEqual(self.client.mutations()+second.mutations(), [])
+
+    def test_discovery_obeys_target_failure_backoff(self):
+        self.long_missing_retry()
+        self.client._unavailable_until = self.clock()+300
+        for _ in range(5):
+            self.clock.advance(5)
+            self.engine.tick()
+        self.assertEqual(self.client.calls, [])
+        self.assertEqual(self.client.mutations(), [])
 
     def test_event_during_background_probe_retains_followup(self):
         self.long_missing_retry()

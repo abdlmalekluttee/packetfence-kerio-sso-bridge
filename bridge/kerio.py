@@ -228,22 +228,32 @@ class KerioClient:
                 raise KerioError(f'Incomplete {method} page')
         raise KerioError(f'{method} pagination limit reached')
 
+    def _refresh_hosts(self, fresh=False):
+        # Caller holds the client transaction lock.
+        if fresh or self._hosts is None or self.clock() - self._hosts_at >= 2:
+            self._hosts = self._list('ActiveHosts.get')
+            self._host_index = {}
+            for host in self._hosts:
+                addresses = set()
+                for value in [host.get('ip')] + (host.get('ip6Addresses') or []):
+                    try:
+                        addresses.add(ipaddress.ip_address(value))
+                    except ValueError:
+                        continue
+                for address in addresses:
+                    self._host_index.setdefault(address, []).append(host)
+            self._hosts_at = self.clock()
+
+    def present_ips(self, ips):
+        """Read one shared snapshot; presence alone never authorizes a bind."""
+        with self.transaction():
+            self._refresh_hosts()
+            return {ip for ip in ips if ipaddress.ip_address(ip) in self._host_index}
+
     def host_by_ip(self, ip, fresh=False):
         addr = ipaddress.ip_address(ip)
         with self.transaction():
-            if fresh or self._hosts is None or self.clock() - self._hosts_at >= 2:
-                self._hosts = self._list('ActiveHosts.get')
-                self._host_index = {}
-                for host in self._hosts:
-                    addresses = set()
-                    for value in [host.get('ip')] + (host.get('ip6Addresses') or []):
-                        try:
-                            addresses.add(ipaddress.ip_address(value))
-                        except ValueError:
-                            continue
-                    for address in addresses:
-                        self._host_index.setdefault(address, []).append(host)
-                self._hosts_at = self.clock()
+            self._refresh_hosts(fresh)
             found = self._host_index.get(addr, [])
             if len(found) > 1:
                 raise KerioError('Ambiguous active host IP')

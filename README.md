@@ -102,7 +102,10 @@ Positive PacketFence timeouts set lease expiry directly. Failed operations remai
 pending with 2..300-second retry backoff. For a missing host, an authenticated
 Start/Update opens a ten-second presence-check window and can shorten an old
 retry timer, with a five-second per-IP cooldown. The existing shared two-second
-host snapshot coalesces reads across IPs. Correctly signed-in users still require
+host snapshot coalesces reads across IPs. While missing hosts are pending, the
+worker checks one shared host snapshot per target every five seconds and wakes
+only leases whose IP is now visible, including after the event window ends.
+Correctly signed-in users still require
 no login/logout; API failures and policy conflicts keep their normal backoff.
 State capacity is 10000 IPs; completed
 revocations are retained for one hour then pruned. One service instance per state
