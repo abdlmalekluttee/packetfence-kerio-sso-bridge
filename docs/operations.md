@@ -205,8 +205,9 @@ prevention is inactive. It then renews its administrative API session and reads
 the owner policy again; this session renewal does not log out network users.
 See the [Session API](https://manuals.gfi.com/en/kerio/api/control/reference/interfacewebadmin_1_1_session.html).
 
-Kerio 9.3.4 can return nonempty revision lists even to a fresh read-only session;
-their presence alone does not identify an outstanding change. Before writing,
+Live Kerio 9.3.4 checks returned nonempty revision lists to fresh read-only
+sessions, and a later check returned empty. These reads do not identify which
+actor changed configuration. Before writing,
 the bridge requires nonempty revisions to remain stable for at least 35 seconds,
 longer than the documented 30-second rollback window. It observes again before
 writing; changed revisions restart the wait. Worker scheduling handles this wait

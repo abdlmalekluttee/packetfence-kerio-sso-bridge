@@ -338,7 +338,7 @@ class KerioClient:
         return values
 
     def _require_stable_config(self, timestamps):
-        # Some appliances return revisions even when nothing awaits confirmation.
+        # Revision lists do not identify which actor changed the configuration.
         # Never confirm those merely to clear them; observe a stable revision for
         # longer than the rollback window before starting our own write/recovery.
         if not timestamps:
