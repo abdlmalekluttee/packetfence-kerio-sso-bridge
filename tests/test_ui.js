@@ -30,5 +30,10 @@ context.saveTarget({preventDefault(){}}).then(async()=>{
   const count=requests.length;nodes.get('domain_aliases').value='{invalid';
   await context.saveTarget({preventDefault(){}});
   assert.equal(requests.length,count);assert.equal(nodes.get('message').className,'error');
+  context.fetch=async()=>({ok:true,json:async()=>({active:94,pending:39,waiting:31,held:8,failed:0,leases:[],source_error:null})});
+  await context.refreshStatus();
+  assert.match(nodes.get('status').textContent,/31 waiting for device traffic/);
+  assert.match(nodes.get('status').textContent,/8 held for PacketFence checks/);
+  assert.match(nodes.get('status').textContent,/0 failures/);
   console.log('GUI safe rendering and override toggle: PASS');
 }).catch(error=>{console.error(error);process.exitCode=1});

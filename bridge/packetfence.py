@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+REQUEST_TIMEOUT = 8
 
 class SourceError(Exception):
     pass
@@ -50,24 +51,50 @@ class PacketFence:
         self._cache = {}
         self._token = None
         self._retry_at = 0
+        self._next_read = 0
         self._failures = 0
         self.error = None
+        self._network_thread = None
 
     def _exchange(self, path, payload, token):
+        # OS DNS resolution is not covered by socket timeouts. Keep at most one
+        # outstanding network operation, and never send late credentials after
+        # the caller's deadline. A stuck resolver cannot stall reconciliation.
+        if self._network_thread and self._network_thread.is_alive():
+            raise SourceError('PacketFence previous request still finishing')
+        cancelled=threading.Event();done=threading.Event();result=[]
+        def run():
+            try:result.append(self._http_exchange(path,payload,token,cancelled))
+            except Exception as ex:
+                result.append(ex if isinstance(ex,SourceError) else SourceError('PacketFence transport failed'))
+            finally:done.set()
+        self._network_thread=threading.Thread(target=run,name='packetfence-read',daemon=True)
+        self._network_thread.start()
+        if not done.wait(REQUEST_TIMEOUT):
+            cancelled.set()
+            raise SourceError('PacketFence request deadline exceeded')
+        self._network_thread=None
+        if isinstance(result[0],Exception):raise result[0]
+        return result[0]
+
+    def _http_exchange(self, path, payload, token, cancelled):
         conn = http.client.HTTPSConnection(self.host,self.port,context=self.context,timeout=5)
         def expire():
+            cancelled.set()
             if conn.sock:
                 try: conn.sock.shutdown(socket.SHUT_RDWR)
                 except OSError: pass
                 conn.close()
-        timer = threading.Timer(8,expire);timer.daemon=True;timer.start()
+        timer = threading.Timer(REQUEST_TIMEOUT,expire);timer.daemon=True;timer.start()
         try:
             conn.connect()
+            if cancelled.is_set():raise SourceError('PacketFence request deadline exceeded')
             if self.pin and not hmac.compare_digest(
                     hashlib.sha256(conn.sock.getpeercert(binary_form=True)).hexdigest(),self.pin.lower()):
                 raise SourceError('PacketFence TLS certificate changed')
             headers = {'Content-Type':'application/json','Accept':'application/json'}
             if token: headers['Authorization']='Bearer '+token
+            if cancelled.is_set():raise SourceError('PacketFence request deadline exceeded')
             conn.request('POST','/api/v1'+path,json.dumps(payload),headers)
             response=conn.getresponse()
             if response.status == 401:
@@ -107,16 +134,18 @@ class PacketFence:
     def refresh(self,rows):
         with self._lock:
             now=self.clock()
-            if now<self._retry_at:return
+            if now<max(self._retry_at,self._next_read):return
             due=[r for r in rows if self._eligible(r) and
                  now-self._cache.get(r['ip'],{}).get('at',float('-inf'))>=60]
             # Oldest observations first; at most two search calls per refresh.
             due=sorted({r['ip']:r for r in due}.values(),key=lambda r:self._cache.get(r['ip'],{}).get('at',0))[:100]
             if not due:return
+            self._next_read=now+1
             ips={r['ip'] for r in due}
             try:
                 bindings=self._search('ip4logs','ip',ips,['ip','mac','start_time','end_time'])
-                if any(r.get('ip') not in ips for r in bindings):raise SourceError('Unexpected PacketFence IP')
+                if any(not isinstance(r.get('ip'),str) or r['ip'] not in ips for r in bindings):
+                    raise SourceError('Unexpected PacketFence IP')
                 macs={mac(r.get('mac')) for r in bindings}
                 if '' in macs:raise SourceError('Invalid PacketFence device identity')
                 formatted={':'.join(m[i:i+2] for i in range(0,12,2)) for m in macs}
@@ -138,22 +167,33 @@ class PacketFence:
         with self._lock:return self._cache.get(ip,{}).get('at',0)
 
     def check(self,row,canonicalize):
-        if not self._eligible(row):return 'unknown'
+        return self.assess(row,canonicalize)[0]
+
+    def assess(self,row,canonicalize):
+        """Return the verdict and its exact observation time under one lock."""
+        if not self._eligible(row):return 'unknown',0
         with self._lock:
             self.refresh([row])
             snapshot=self._cache.get(row['ip'])
-            if not snapshot or self.clock()-snapshot['at']>=60:return 'unknown'
-            bindings,nodes=snapshot['bindings'],snapshot['nodes']
-            if len(bindings)!=1 or len(nodes)!=1:return 'unknown'
-            binding,node=bindings[0],nodes[0]
-            if not isinstance(node.get('pid'),str) or not node['pid'] or node.get('status') not in ('reg','unreg','pending'):
-                return 'unknown'
-            end=binding.get('end_time')
-            if end not in ('0000-00-00 00:00:00',None):
-                try:ended=datetime.strptime(end,'%Y-%m-%d %H:%M:%S').replace(tzinfo=self.timezone).timestamp()<=self.clock()
-                except (ValueError,TypeError):return 'unknown'
-                if ended:return 'stale'
-            if (mac(binding['mac'])!=mac(row['mac']) or node['status']!='reg'
-                    or canonicalize(node['pid'])!=canonicalize(row['user'])):
-                return 'stale'
-            return 'current'
+            if not snapshot or self.clock()-snapshot['at']>=60:return 'unknown',0
+            return self._classify(row,canonicalize,snapshot),snapshot['at']
+
+    def _classify(self,row,canonicalize,snapshot):
+        bindings,nodes=snapshot['bindings'],snapshot['nodes']
+        if len(bindings)!=1 or len(nodes)!=1:return 'unknown'
+        binding,node=bindings[0],nodes[0]
+        if not isinstance(node.get('pid'),str) or not node['pid'] or node.get('status') not in ('reg','unreg','pending'):
+            return 'unknown'
+        try:
+            start=datetime.strptime(binding['start_time'],'%Y-%m-%d %H:%M:%S').replace(tzinfo=self.timezone).timestamp()
+            end=binding['end_time']
+            if not isinstance(end,str):return 'unknown'
+            if end != '0000-00-00 00:00:00':
+                ended=datetime.strptime(end,'%Y-%m-%d %H:%M:%S').replace(tzinfo=self.timezone).timestamp()
+                if ended<start:return 'unknown'
+                if ended<=self.clock():return 'stale'
+        except (KeyError,ValueError,TypeError):return 'unknown'
+        if (mac(binding['mac'])!=mac(row['mac']) or node['status']!='reg'
+                or canonicalize(node['pid'])!=canonicalize(row['user'])):
+            return 'stale'
+        return 'current'

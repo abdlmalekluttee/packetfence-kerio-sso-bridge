@@ -94,3 +94,13 @@ class AuthorityTests(unittest.TestCase):
         self.assertEqual(self.store.all(),[])
         self.assertEqual(self.client.calls,[])
         self.assertEqual(self.source.calls,[])
+
+    def test_source_batch_budget_deferral_wakes_on_next_observation(self):
+        self.source.refresh([self.params])
+        self.source.bindings[0]['ip']='192.0.2.11'
+        self.client.hosts=[host(user='',ip='192.0.2.11')]
+        params={**self.params,'ip':'192.0.2.11'}
+        self.engine.handle('Start',params)
+        self.assertEqual(self.client.mutations(),[])
+        self.clock.advance(1);self.engine.tick()
+        self.assertEqual(self.client.hosts[0]['user']['name'],'alice')

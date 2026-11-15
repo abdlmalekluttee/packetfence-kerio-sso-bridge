@@ -267,12 +267,11 @@ class Engine:
             lock.release()
 
     def _check_source(self, row, client):
-        authority = self.source.check(row, client.user_name)
+        authority, observed = self.source.assess(row, client.user_name)
         if authority == 'current':
             self._patch(row, source_stale_since=None)
             return None
         error = SOURCE_STALE if authority == 'stale' else SOURCE_UNKNOWN
-        observed = self.source.observed(row['ip'])
         since = row.get('source_stale_since')
         retire = False
         if authority == 'stale':
@@ -291,7 +290,7 @@ class Engine:
                         'generation':latest['generation']+1, 'updated':self.clock(),
                         'next_try':0, 'attempts':0, 'retired_reason':'obsolete_packetfence_binding'}
             return {**latest, 'error':error, 'next_try':self.clock()+60,
-                    'attempts':0, 'source_stale_since':since}
+                    'attempts':0, 'source_stale_since':since, 'source_seen':observed}
         result = self.store.update(row['ip'], update)
         if retire and result.get('complete'):
             LOG.info('retired_obsolete_binding ip=%s', row['ip'])
@@ -363,6 +362,10 @@ class Engine:
         now = self.clock()
         if self.source:
             self.source.refresh([r for r in self.store.all() if not r.get('complete') and usable_ip(r['ip'])])
+            for row in self.store.all():
+                if (not row.get('complete') and row.get('error') in (SOURCE_STALE,SOURCE_UNKNOWN)
+                        and self.source.observed(row['ip']) > row.get('source_seen',0)):
+                    self._patch(row,next_try=0)
         self._discover_hosts(now)
         for row in self.store.all():
             if self._stop.is_set():
