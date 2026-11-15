@@ -85,6 +85,15 @@ The host list remains shared and cached for two seconds per Kerio target, so a
 burst of missing IPs can reuse one snapshot. Pagination and login verification
 can require additional reads when hosts actually need binding.
 
+The worker also checks a shared snapshot every five seconds for each target with
+pending missing-host leases. This discovers a device that begins sending traffic
+after the event window ends, without waiting for another event or the old retry.
+Only visible IPs are woken; absent leases keep their existing retry deadlines.
+There is no such discovery scan when no missing-host leases need it. A snapshot
+may span several API pages; each detected arrival still passes normal ownership,
+ambiguity, expiry and MAC checks before any write. API failure backoff remains in
+force. These are scheduled intervals, not a hard latency guarantee under load.
+
 This does not bypass API outage backoff, manual-rule restrictions, username/MAC
 checks or Stop protections. It does not poll PacketFence for online status.
 PacketFence must deliver an event and Kerio must see the device; no strict
