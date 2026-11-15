@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Existing correct sessions are untouched; no manufactured live conflicts.
-- Preserve unrelated policy and users; never confirm an already-pending unrelated configuration.
+- Preserve unrelated policy and users; never confirm configuration solely on a read. Persistent revisions require a 35-second stability observation before our write; this reduces concurrency risk but cannot establish exclusive ownership.
 - Five-second settling, 60-second recovery retry spacing, two writes/two bind attempts maximum, 15-minute evidence lifetime.
 - Evidence must survive restart; changed ownership/configuration invalidates it.
 - Existing source validation and disabled-override safeguards remain mandatory.

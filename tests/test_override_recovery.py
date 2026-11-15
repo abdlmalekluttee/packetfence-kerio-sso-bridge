@@ -15,7 +15,7 @@ class CutoffAppliance(Appliance):
         super().__init__({'override_manual':True})
         self.hosts=[host(method='AuthMethodAutomatic')]
         self.pending=False;self.confirm=True;self.restore_automatic=False
-        self.timestamps=None
+        self.timestamps=None;self.always_timestamps=False
 
     def _exchange(self,payload,headers):
         method=payload['method']
@@ -23,7 +23,8 @@ class CutoffAppliance(Appliance):
             self.calls.append((method,copy.deepcopy(payload['params'])))
             if method=='Session.getConfigTimestamp':
                 result={'clientTimestampList':self.timestamps if self.timestamps is not None else
-                        ([{'name':'config','timestamp':17}] if self.pending else [])}
+                        ([{'name':'config','timestamp':17 if self.pending else 16}]
+                         if self.pending or self.always_timestamps else [])}
             else:
                 result={'confirmed':self.confirm}
                 if self.confirm:self.pending=False
@@ -100,9 +101,51 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.methods(),[])
         self.assertNotIn('Session.confirmConfig',[m for m,_ in self.client.calls])
 
+    def test_persistent_appliance_timestamps_allow_stable_configuration_write(self):
+        self.client.always_timestamps=True
+        self.engine.handle('Start',self.params)
+        self.assertEqual(self.methods(),[])
+        self.resume(36)
+        self.assertEqual(self.methods(),['Users.set'])
+        self.resume(6)
+        self.assertEqual(self.client.hosts[0]['user']['name'],'bob')
+
+    def test_changing_revision_restarts_stability_window(self):
+        self.client.timestamps=[{'name':'config','timestamp':1}]
+        self.engine.handle('Start',self.params)
+        self.client.timestamps=[{'name':'config','timestamp':2}]
+        self.resume(36)
+        self.assertEqual(self.methods(),[])
+        self.assertNotIn('Session.confirmConfig',[m for m,_ in self.client.calls])
+        self.resume(36)
+        self.assertEqual(self.methods(),['Users.set'])
+
+    def test_unconfirmed_write_requires_new_stability_observation(self):
+        self.client.always_timestamps=True
+        self.engine.handle('Start',self.params)
+        original=self.client._exchange
+        def exchange(payload,headers):
+            result=original(payload,headers)
+            if payload['method']=='Session.confirmConfig':raise TimeoutError('lost response')
+            return result
+        self.client._exchange=exchange
+        self.resume(36)
+        self.client._exchange=original
+        self.resume(6)
+        self.assertEqual(self.methods(),['Users.set'])
+        self.resume(36)
+        self.assertEqual(self.methods(),['Users.set','ActiveHosts.logout','ActiveHosts.login'])
+
+    def test_timestamp_order_does_not_reset_stability(self):
+        self.client.timestamps=[{'name':'config','timestamp':1},{'name':'UserDB','timestamp':2}]
+        self.engine.handle('Start',self.params)
+        self.client.timestamps.reverse();self.resume(36)
+        self.assertEqual(self.methods(),['Users.set'])
+
     def test_malformed_timestamps_never_authorize_mutation(self):
         for invalid in ({},[{}],[{'name':'config','timestamp':True}],
-                        [{'name':'config','timestamp':'17'}]):
+                        [{'name':'config','timestamp':'17'}],
+                        [{'name':'config','timestamp':1},{'name':'config','timestamp':2}]):
             with self.subTest(invalid=invalid):
                 self.setUp();self.client.timestamps=invalid
                 self.engine.handle('Start',self.params)
