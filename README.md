@@ -30,8 +30,11 @@ default). When a different PacketFence user needs an IP currently automatically
 assigned to someone else, enabling this permits a minimal Kerio Users.set update
 removing that exact address from the previous user's automatic-login list.
 
-The bridge preserves other addresses and account settings, verifies the write,
-then verifies the active login. It never deletes users. Shared address groups,
+The bridge preserves other addresses and account settings, confirms and verifies
+the write through a renewed API session, then waits five seconds before binding
+the active login. Durable recovery survives restarts and limits retries to avoid
+logout loops. See [recovery limits](docs/operations.md#manual-ip-override-recovery).
+It never deletes users. Shared address groups,
 MAC rules, inherited settings and non-exact address rules require manual resolution.
 Disabling the option prevents future removals; it does not restore earlier ones.
 Saving waits for any in-flight operation on that target. After a successful

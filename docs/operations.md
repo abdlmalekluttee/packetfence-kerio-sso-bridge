@@ -195,6 +195,44 @@ SSO cache settings, API permissions, request counts, and resulting traffic polic
 Manual assignment support is based on the documented exact-address Users API;
 validate persistence/readback on your specific appliance before enabling it.
 
+## Manual-IP override recovery
+
+Kerio lists `Users.set` among operations covered by [cut-off prevention](https://manuals.gfi.com/en/kerio/api/control/reference/cutoff_prevention.html).
+The bridge checks that no configuration confirmation is already pending, removes
+only the conflicting exact IP, obtains `Session.getConfigTimestamp`, and confirms
+nonempty timestamps using `Session.confirmConfig`. Empty timestamps mean cut-off
+prevention is inactive. It then renews its administrative API session and reads
+the owner policy again; this session renewal does not log out network users.
+See the [Session API](https://manuals.gfi.com/en/kerio/api/control/reference/interfacewebadmin_1_1_session.html).
+
+Before writing, the bridge journals the host ID, old owner, desired identity,
+target configuration fingerprint and before/after policy hashes in the existing
+lease database. A verified removal waits five seconds before a host bind attempt.
+If a response is lost or the bridge restarts, it rechecks this proof and the owner
+policy through a renewed session. A removed exact-IP rule is accepted only with
+matching saved proof, never merely because an automatic login is still visible.
+An anonymous host after an interrupted logout must still have the same host ID
+and unchanged owner policy. A reappearing named login blocks the login request.
+
+Each recovery permits at most two configuration writes and two host bind attempts,
+with at least 60 seconds between bind attempts and a 15-minute proof lifetime.
+Duplicate accounting events preserve these limits; there is no extra polling
+thread or sleep while holding an operation lock. Matching sessions need no
+recovery call or logout/login. Proof and counters survive an initially successful
+bind, so delayed reappearance can use the remaining attempt within its lifetime.
+New identity/Stop events supersede recovery, and
+the optional PacketFence authority monitor still blocks stale or unknown records.
+Changed host, owner, target configuration or policy prevents further changes.
+
+Exhausted or invalid recovery remains visible as a pending error for investigation;
+the bridge must not bypass an administrator's changed policy to force success.
+Shared group/MAC rules still require manual resolution. Disabling override prevents
+further recovery edits. Confirmation is not an atomic compare-and-swap: use a
+dedicated bridge API account and avoid concurrent edits to the same owner policy.
+This protocol prevents an unconfirmed change from being treated as successful;
+it cannot guarantee immediate convergence when Kerio is unavailable or external
+policy keeps assigning the old identity.
+
 ## Rollback
 
 Stop the new container. Restore the previous code/image and preserved config.

@@ -15,6 +15,7 @@ PRESENCE_COOLDOWN = 5
 PRESENCE_WINDOW = 10
 SOURCE_STALE = 'PacketFence binding obsolete; preserving any existing Kerio session'
 SOURCE_UNKNOWN = 'PacketFence ownership unverified; preserving existing Kerio sessions'
+RECOVERY_WAIT = 'Exact IP override verified; recovery settling'
 
 
 def usable_ip(value):
@@ -222,9 +223,33 @@ class Engine:
                         if not client.matches(host, expected):
                             if any(client.user_name(other['user']) != expected for other in self._siblings(row, eid, host)):
                                 raise KerioError('Conflicting active identities share this Kerio host; resolve alias leases')
-                            client.prepare_conflict(host, ip, expected)
+                            recovery=row.get('manual_recovery')
+                            if recovery and (recovery.get('config')!=cfg or recovery.get('expires',0)<=self.clock()
+                                    or recovery.get('binds',0)>=2):
+                                raise KerioError('Manual override recovery expired, changed or exhausted; refusing mutation')
+                            def checkpoint(proof):
+                                written=[False]
+                                def save(latest):
+                                    if not latest or latest['generation']!=row['generation']:
+                                        return None
+                                    prior=latest.get('manual_recovery') or {}
+                                    writes=prior.get('writes',0)+(proof['phase']=='prepared')
+                                    if writes>2:
+                                        raise KerioError('Manual override write limit reached; refusing mutation')
+                                    value={**proof,'config':cfg,'writes':writes,'binds':prior.get('binds',0),
+                                           'expires':prior.get('expires',self.clock()+900),
+                                           'not_before':max(prior.get('not_before',0),self.clock()+5)}
+                                    written[0]=True
+                                    return {**latest,'manual_recovery':value}
+                                self.store.update(ip,save)
+                                return written[0]
+                            client.prepare_conflict(host, ip, expected, recovery, checkpoint)
                             if not self._current(row):
                                 return 'Superseded; latest event pending'
+                            recovery=self.store.get(ip).get('manual_recovery')
+                            if recovery and recovery['not_before']>self.clock():
+                                self._patch(row,error=RECOVERY_WAIT,next_try=recovery['not_before'])
+                                return RECOVERY_WAIT
                             # Configuration inspection may take time. Re-read before logout.
                             current = client.host_by_ip(ip, fresh=True)
                             if current is None or current.get('id') != host.get('id') or not self._mac_matches(row,current):
@@ -232,11 +257,34 @@ class Engine:
                             if not client.matches(current, expected):
                                 if current.get('user') != host.get('user'):
                                     raise KerioError('Kerio owner changed concurrently; retry pending')
+                                if recovery:
+                                    reserved=[False]
+                                    def reserve(latest):
+                                        if not latest or latest['generation']!=row['generation']:
+                                            return None
+                                        proof=latest.get('manual_recovery')
+                                        if (not proof or proof['expires']<=self.clock() or proof['binds']>=2
+                                                or proof['not_before']>self.clock()):
+                                            raise KerioError('Manual override recovery not eligible; refusing mutation')
+                                        reserved[0]=True
+                                        return {**latest,'manual_recovery':{**proof,'binds':proof['binds']+1,
+                                                                                 'not_before':self.clock()+60}}
+                                    self.store.update(ip,reserve)
+                                    if not reserved[0]:
+                                        return 'Superseded; latest event pending'
                                 if (current.get('user') or {}).get('name'):
                                     client.logout(current['id'])
                                 if not self._current(row):
                                     return 'Superseded; latest event pending'
-                                client.login_user(current['id'], expected)
+                                after=client.host_by_ip(ip,fresh=True)
+                                if not self._current(row):
+                                    return 'Superseded; latest event pending'
+                                if (not after or after.get('id')!=current['id'] or not self._mac_matches(row,after)):
+                                    raise KerioError('Host changed after logout; retry safely')
+                                if not client.matches(after,expected):
+                                    if (after.get('user') or {}).get('name'):
+                                        raise KerioError('Host authenticated again after logout; recovery pending')
+                                    client.login_user(current['id'], expected)
                                 verified = client.host_by_ip(ip, fresh=True)
                                 if not verified or not client.matches(verified, expected):
                                     raise KerioError('Login verification failed')
@@ -253,6 +301,8 @@ class Engine:
                     now = self.clock()
                     changes = {'error':error, 'attempts':attempts,
                                'next_try':now + min(300, 2 ** min(attempts, 9))}
+                    if latest.get('manual_recovery'):
+                        changes['next_try']=max(changes['next_try'],latest['manual_recovery'].get('not_before',0))
                     if error in MISSING_HOST_ERRORS and latest['desired'] == 'active':
                         changes['presence_retry_after'] = now + PRESENCE_COOLDOWN
                         # Read the latest event deadline inside the transaction:

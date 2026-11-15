@@ -235,6 +235,7 @@ class EngineTests(unittest.TestCase):
         self.assertIsNotNone(self.engine.handle('Start',event('bob')))
         self.assertEqual(self.client.mutations(),[])
         self.client.cfg['override_manual']=True; self.clock.advance(3)
-        self.assertIsNone(self.engine.handle('Start',event('bob')))
+        self.assertIsNotNone(self.engine.handle('Start',event('bob')))
+        self.clock.advance(6); self.engine.tick()
         self.assertEqual(self.client.hosts[0]['user']['name'],'bob')
         self.assertEqual(self.client.users[0]['autoLogin']['addresses']['value'],['192.0.2.20'])
